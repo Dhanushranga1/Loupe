@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "loupe_core"
+version = "0.1.0"
+description = "Framework-free symbol-graph extraction and retrieval library for Loupe"
+requires-python = ">=3.11"
+dependencies = [
+    # Pinned below 0.26.0: that release segfaults during QueryCursor.captures()
+    # on real-world files with ~170+ captured nodes (verified via the Phase 0
+    # smoke test against stdlib argparse.py). 0.25.2 is confirmed stable.
+    "tree-sitter>=0.25.2,<0.26.0",
+    "tree-sitter-python>=0.25.0,<0.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
