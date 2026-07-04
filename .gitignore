@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Node / Next.js (lens/)
+node_modules/
+.next/
+out/
+
+# Loupe's own generated state, if this repo is ever indexed by Loupe itself
+.loupe/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
