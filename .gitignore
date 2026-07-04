@@ -22,3 +22,6 @@ out/
 .DS_Store
 .vscode/
 .idea/
+
+# Planning/spec docs — kept local only, not pushed to GitHub
+docs/
