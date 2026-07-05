@@ -152,3 +152,25 @@ def test_id_stable_across_body_edit_but_not_across_kind_or_name(tmp_path):
 @pytest.mark.parametrize("fixture_name", [p.name for p in FIXTURES.glob("*.py")])
 def test_every_fixture_extracts_without_crashing(fixture_name):
     extract_symbols(str(FIXTURES / fixture_name))
+
+
+def test_nested_closure_functions_are_not_extracted(tmp_path):
+    """Regression test: found via the Phase 1 smoke test, where a real closure in this
+    project's own graph/builder.py leaked through as a spurious top-level symbol."""
+    f = tmp_path / "a.py"
+    f.write_text("def outer():\n    def inner():\n        return 1\n    return inner()\n")
+    names = [s.qualified_name for s in extract_symbols(str(f))]
+    assert names == ["outer"]
+
+
+def test_closure_nested_inside_a_method_is_not_extracted(tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text(
+        "class Foo:\n"
+        "    def bar(self):\n"
+        "        def helper():\n"
+        "            return 1\n"
+        "        return helper()\n"
+    )
+    names = [s.qualified_name for s in extract_symbols(str(f))]
+    assert names == ["Foo", "Foo.bar"]

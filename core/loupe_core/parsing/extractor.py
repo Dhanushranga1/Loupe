@@ -3,8 +3,14 @@
 Implements the algorithm in docs/phase-0-foundations.md §4. Byte-exact,
 Python-only for Phase 0 (module-level functions, classes, methods, async
 functions, decorators). Nested/closure functions and lambdas are out of
-scope (see phase-0-foundations.md §1) and are simply never captured by the
-query below, not specially rejected.
+scope (see phase-0-foundations.md §1): the tree-sitter query below captures
+every `function_definition`/`class_definition` regardless of nesting depth,
+so closures nested inside a function body are explicitly filtered back out
+by `is_nested_in_function` rather than never being captured in the first
+place — found via the Phase 1 smoke test (docs/phase-1-graph-theory.md §10),
+where a real closure in this project's own `graph/builder.py` leaked through
+as a spurious top-level symbol; none of Phase 0's own fixtures happened to
+contain a function-nested-in-a-function case.
 
 One resolved inconsistency worth recording: phase-0-foundations.md §3's
 illustrative comment shows a signature ending in ":", but §4's algorithm and
@@ -23,7 +29,10 @@ import tree_sitter as ts
 from .languages import get_language, get_parser
 from .schema import Symbol, SymbolKind, compute_content_hash, compute_symbol_id
 
-_QUERY_SOURCE = "(function_definition) @def (class_definition) @def"
+# Public: Phase 1 (graph/builder.py) re-parses each file independently and
+# reuses this exact query + sort order to re-locate each Symbol's AST node
+# without Phase 0 needing to keep tree-sitter Tree objects alive.
+DEFINITION_QUERY_SOURCE = "(function_definition) @def (class_definition) @def"
 
 
 def extract_symbols(file_path: str) -> list[Symbol]:
@@ -36,7 +45,7 @@ def extract_symbols(file_path: str) -> list[Symbol]:
     source_bytes = Path(file_path).read_bytes()
     tree = get_parser("python").parse(source_bytes)
 
-    query = ts.Query(get_language("python"), _QUERY_SOURCE)
+    query = ts.Query(get_language("python"), DEFINITION_QUERY_SOURCE)
     cursor = ts.QueryCursor(query)
     captures = cursor.captures(tree.root_node)
     nodes = sorted(captures.get("def", []), key=lambda n: n.start_byte)
@@ -45,6 +54,9 @@ def extract_symbols(file_path: str) -> list[Symbol]:
     symbol_id_by_start_byte: dict[int, str] = {}
 
     for node in nodes:
+        if is_nested_in_function(node):
+            continue
+
         name = _node_text(node.child_by_field_name("name"), source_bytes)
         container = _enclosing_container(node)
         is_method = container is not None and container.type == "class_definition"
@@ -108,6 +120,16 @@ def _enclosing_container(node: ts.Node) -> ts.Node | None:
     if grandparent is not None and grandparent.type == "decorated_definition":
         grandparent = grandparent.parent
     return grandparent
+
+
+def is_nested_in_function(node: ts.Node) -> bool:
+    """True if any enclosing definition is a function — i.e. `node` is a closure."""
+    container = _enclosing_container(node)
+    while container is not None:
+        if container.type == "function_definition":
+            return True
+        container = _enclosing_container(container)
+    return False
 
 
 def _qualified_name(node: ts.Node, name: str, source_bytes: bytes) -> str:
