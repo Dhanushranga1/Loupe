@@ -1,0 +1,61 @@
+# Hand-labeled query set for Phase 2 retrieval evaluation (docs/phase-2-retrieval.md §7).
+#
+# `expected` symbols are identified as "<fixture_file>::<qualified_name>" rather
+# than raw symbol_id hashes, since ids depend on the absolute file_path used to
+# extract them (not stable across machines/checkouts) — tests resolve these
+# labels to real ids at runtime against the loaded Phase 1 fixture set.
+#
+# Every query here was verified empirically against the real bge-small-en-v1.5
+# model (see docs/progress/phase-2/checklist.md changelog) — adversarial pairs
+# especially are not hand-guessable from tokenizer rules alone, per the spec's
+# own note that they require "hands-on tuning once the real embedding model is
+# running."
+
+- query: "validate an email address"
+  expected: ["utils.py::validate_email"]
+  kind: straightforward
+  note: "target's name and query share vocabulary ('validate', 'email')"
+
+- query: "turn a number into a displayable price"
+  expected: ["utils.py::format_currency"]
+  kind: adversarial
+  note: >
+    paraphrase using none of the target's exact words. Lexical alone fails
+    outright (format_currency scores 0.0 BM25, doesn't even surface — the
+    real top lexical hits are the unrelated circular_a/circular_b helpers).
+    Semantic alone ranks the true target #1. Fusion must not be dragged down
+    by lexical's complete miss here.
+
+- query: "OrderService.log"
+  expected: ["services.py::OrderService.log"]
+  kind: adversarial
+  note: >
+    exact dotted method reference — BM25 gets it right immediately (rank 1,
+    unambiguous). Semantic alone ranks it 7th (the embedding over-weights
+    "OrderService" and surfaces generic Order-shaped symbols above the
+    specific .log method) — outside top-3 on semantic alone. Fusion must
+    recover it into the top 3 using lexical's strong signal.
+
+- query: "create a new order"
+  expected: ["services.py::OrderService.create_order"]
+  kind: straightforward
+
+- query: "log a message for debugging purposes"
+  expected: ["services.py::OrderService.log"]
+  kind: straightforward
+
+- query: "process an order related request"
+  expected: ["handlers.py::OrderHandler.process"]
+  kind: straightforward
+
+- query: "compute a nicely formatted price for an order"
+  expected: ["models.py::Order.total"]
+  kind: paraphrase
+
+- query: "check that a string is a valid email"
+  expected: ["utils.py::validate_email"]
+  kind: paraphrase
+
+- query: "handle a request related to users"
+  expected: ["handlers.py::UserHandler.process"]
+  kind: paraphrase
