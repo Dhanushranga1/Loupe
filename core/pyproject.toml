@@ -17,6 +17,9 @@ dependencies = [
     # networkx.pagerank calls into scipy/numpy internally; not declared as a
     # hard networkx dependency, but required at runtime for pagerank to work.
     "scipy>=1.11",
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=3.0",
+    "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]
