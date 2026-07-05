@@ -13,6 +13,10 @@ dependencies = [
     # smoke test against stdlib argparse.py). 0.25.2 is confirmed stable.
     "tree-sitter>=0.25.2,<0.26.0",
     "tree-sitter-python>=0.25.0,<0.26.0",
+    "networkx>=3.0",
+    # networkx.pagerank calls into scipy/numpy internally; not declared as a
+    # hard networkx dependency, but required at runtime for pagerank to work.
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
