@@ -1,0 +1,45 @@
+{
+  "loupe_rrf": {
+    "recall_5": {
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1
+    },
+    "recall_10": {
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1
+    },
+    "tokens": {
+      "mean": 2610,
+      "median": 2617,
+      "n": 7
+    }
+  },
+  "loupe_learned_ranker": {
+    "recall_5": {
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1
+    },
+    "recall_10": {
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1
+    },
+    "tokens": {
+      "mean": 2610,
+      "median": 2617,
+      "n": 7
+    }
+  },
+  "_meta": {
+    "repo_path": "/home/dhanush/Development/Loupe",
+    "task_count": 7,
+    "real_telemetry_examples_available": 0,
+    "real_git_history_qualifying_commits": 7,
+    "cold_start_threshold": 200,
+    "ranker_trained": false,
+    "generated_at": "2026-07-12T16:44:24Z"
+  }
+}

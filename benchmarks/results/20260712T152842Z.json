@@ -1,0 +1,83 @@
+{
+  "repo_path": "/home/dhanush/Development/Loupe",
+  "task_count": 7,
+  "oracle_condition": {
+    "naive_total_tokens": 3309,
+    "loupe_total_tokens": 581,
+    "ratio": 5.695352839931153,
+    "per_task_tokens": {
+      "naive": [
+        0,
+        0,
+        0,
+        0,
+        3309,
+        0,
+        0
+      ],
+      "vector_rag": [],
+      "loupe": [
+        0,
+        0,
+        0,
+        0,
+        581,
+        0,
+        0
+      ]
+    }
+  },
+  "end_to_end_condition": {
+    "naive": {
+      "recall_5": {
+        "mean": 0.0,
+        "median": 0.0,
+        "n": 1
+      },
+      "recall_10": {
+        "mean": 0.0,
+        "median": 0.0,
+        "n": 1
+      },
+      "tokens": {
+        "mean": 4243.428571428572,
+        "median": 4937,
+        "n": 7
+      }
+    },
+    "vector_rag": {
+      "recall_5": {
+        "mean": 1.0,
+        "median": 1.0,
+        "n": 1
+      },
+      "recall_10": {
+        "mean": 1.0,
+        "median": 1.0,
+        "n": 1
+      },
+      "tokens": {
+        "mean": 4793,
+        "median": 6287,
+        "n": 7
+      }
+    },
+    "loupe": {
+      "recall_5": {
+        "mean": 1.0,
+        "median": 1.0,
+        "n": 1
+      },
+      "recall_10": {
+        "mean": 1.0,
+        "median": 1.0,
+        "n": 1
+      },
+      "tokens": {
+        "mean": 2610,
+        "median": 2617,
+        "n": 7
+      }
+    }
+  }
+}

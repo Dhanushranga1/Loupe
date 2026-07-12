@@ -24,7 +24,7 @@ BATCH_SIZE = 64
 _model: SentenceTransformer | None = None
 
 
-def _get_default_model() -> SentenceTransformer:
+def get_default_model() -> SentenceTransformer:
     """Lazily load the real model once per process — it's ~130MB, not something to reload per call."""
     global _model
     if _model is None:
@@ -101,7 +101,7 @@ class SemanticIndex:
         self._model = model  # injectable for tests; production uses the lazy real model
 
     def _encode(self, texts: list[str]) -> list[list[float]]:
-        model = self._model if self._model is not None else _get_default_model()
+        model = self._model if self._model is not None else get_default_model()
         embeddings = model.encode(texts, batch_size=BATCH_SIZE, normalize_embeddings=True)
         return [list(row) for row in embeddings]
 

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[project]
+name = "loupe_server"
+version = "0.1.0"
+description = "Thin FastAPI/MCP server wiring loupe_core into a running service Claude Code can connect to"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "fastapi-mcp>=0.4",
+    "uvicorn[standard]>=0.30",
+    "watchdog>=4.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+# loupe_core is not published anywhere pip can resolve a bare name from — it's
+# installed separately, editable, from ../core into the same venv (see
+# scripts/setup_dev.sh). Standard pattern for a plain-pip monorepo with no
+# extra tooling (uv/Poetry workspaces) adopted.
+
+[project.scripts]
+loupe = "app.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
