@@ -16,6 +16,7 @@ from app.bootstrap import LoupeIndex
 from app.mcp_tools import (
     DeniedResponse,
     GetSymbolResponse,
+    analyze_impact_impl,
     expand_dependencies_impl,
     get_symbol_impl,
     list_symbols_impl,
@@ -129,6 +130,40 @@ def test_expand_dependencies_on_circular_fixture_terminates(test_index):
     helper_a = _by_qualified_name(test_index, "helper_a")
     results = expand_dependencies_impl(test_index, helper_a.id, depth=5, direction="both")
     assert {r.qualified_name for r in results} == {"helper_b"}
+
+
+# --------------------------------------------------------------------------
+# analyze_impact (E1 — docs/loupe-extensions.md)
+# --------------------------------------------------------------------------
+
+
+def test_analyze_impact_wraps_core_report_with_full_symbol_summaries(test_index):
+    format_currency = _by_qualified_name(test_index, "format_currency")
+
+    report = analyze_impact_impl(test_index, format_currency.id, depth=2)
+
+    assert report.symbol_id == format_currency.id
+    direct_names = {s.qualified_name for s in report.directly_affected}
+    assert "Order.total" in direct_names
+    # a real SymbolSummary, not just an id — signature/file_path came through
+    total_summary = next(s for s in report.directly_affected if s.qualified_name == "Order.total")
+    assert total_summary.file_path == "models.py"
+    assert total_summary.signature
+
+
+def test_analyze_impact_unknown_id_raises_404(test_index):
+    with pytest.raises(HTTPException) as exc_info:
+        analyze_impact_impl(test_index, "0" * 16, depth=2)
+    assert exc_info.value.status_code == 404
+
+
+def test_analyze_impact_leaf_symbol_returns_empty_lists(test_index):
+    dispatch = _by_qualified_name(test_index, "dispatch")
+
+    report = analyze_impact_impl(test_index, dispatch.id, depth=2)
+
+    assert report.directly_affected == []
+    assert report.transitively_affected == []
 
 
 # --------------------------------------------------------------------------

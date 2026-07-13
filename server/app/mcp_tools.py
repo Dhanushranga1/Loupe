@@ -1,11 +1,12 @@
-"""MCP tool definitions — the four tools Claude sees (docs/phase-4-systems.md §3).
+"""MCP tool definitions — the four Phase 4 tools plus E1's `analyze_impact`
+(docs/phase-4-systems.md §3, docs/loupe-extensions.md E1).
 
 Governor scoping (§3, stated explicitly since it wasn't nailed down until
-this phase): `list_symbols`, `search_symbols`, and `expand_dependencies`
-return discovery-tier content only (signatures, not full source) and never
-touch Phase 3's session residency/eviction logic — their cost is small
-enough to treat as always-affordable. Only `get_symbol` — the one call
-returning full extracted source — is governed.
+this phase): `list_symbols`, `search_symbols`, `expand_dependencies`, and
+`analyze_impact` all return discovery-tier content only (signatures/ids, not
+full source) and never touch Phase 3's session residency/eviction logic —
+their cost is small enough to treat as always-affordable. Only `get_symbol`
+— the one call returning full extracted source — is governed.
 
 Split into pure `*_impl` functions (testable directly against a manually
 constructed `LoupeIndex`, no HTTP needed) and thin `@router` HTTP wrappers
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 from loupe_core.governor.budget import symbol_extraction_cost
 from loupe_core.governor.knapsack import KnapsackCandidate
 from loupe_core.governor.session import HARD_CEILING, request_symbols
+from loupe_core.graph.impact import analyze_impact as graph_analyze_impact
 from loupe_core.graph.traversal import expand_dependencies as graph_expand_dependencies
 from loupe_core.parsing.schema import Symbol
 
@@ -89,6 +91,14 @@ class DeniedResponse(BaseModel):
     suggestion: str
 
 
+class ImpactReportResponse(BaseModel):
+    symbol_id: str
+    directly_affected: list[SymbolSummary]
+    transitively_affected: list[SymbolSummary]
+    high_centrality_warnings: list[str]  # symbol_ids, highest PageRank first
+    affected_route_count: int
+
+
 def _to_summary(symbol: Symbol, score: float | None = None) -> SymbolSummary:
     return SymbolSummary(
         symbol_id=symbol.id,
@@ -139,6 +149,22 @@ def expand_dependencies_impl(
     reachable_ids = graph_expand_dependencies(index.graph.graph, symbol_id, depth=depth, direction=direction)
     symbols = [s for s in (index.symbol_by_id(sid) for sid in reachable_ids) if s is not None]
     return [_to_summary(s) for s in _sorted_by_file_and_byte(symbols)]
+
+
+def analyze_impact_impl(index: LoupeIndex, symbol_id: str, depth: int = 2) -> ImpactReportResponse:
+    if index.symbol_by_id(symbol_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown symbol_id: {symbol_id!r}")
+
+    symbols_by_id = {s.id: s for s in index.symbols}
+    report = graph_analyze_impact(index.graph.graph, symbols_by_id, index.graph.pagerank_scores, symbol_id, depth=depth)
+
+    return ImpactReportResponse(
+        symbol_id=symbol_id,
+        directly_affected=[_to_summary(symbols_by_id[s.symbol_id]) for s in report.directly_affected],
+        transitively_affected=[_to_summary(symbols_by_id[s.symbol_id]) for s in report.transitively_affected],
+        high_centrality_warnings=report.high_centrality_warnings,
+        affected_route_count=report.affected_route_count,
+    )
 
 
 def get_symbol_impl(
@@ -217,3 +243,10 @@ async def expand_dependencies_route(
 ) -> list[SymbolSummary]:
     index: LoupeIndex = request.app.state.index
     return expand_dependencies_impl(index, symbol_id, depth=depth, direction=direction)
+
+
+@router.get("/analyze_impact", operation_id="analyze_impact")
+@log_tool_call("analyze_impact")
+async def analyze_impact_route(request: Request, symbol_id: str, depth: int = 2) -> ImpactReportResponse:
+    index: LoupeIndex = request.app.state.index
+    return analyze_impact_impl(index, symbol_id, depth=depth)

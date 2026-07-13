@@ -108,7 +108,7 @@ def test_mcp_handshake_and_tools_list(client):
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     )
     tool_names = {t["name"] for t in response.json()["result"]["tools"]}
-    assert tool_names == {"list_symbols", "search_symbols", "get_symbol", "expand_dependencies"}
+    assert tool_names == {"list_symbols", "search_symbols", "get_symbol", "expand_dependencies", "analyze_impact"}
 
 
 def test_mcp_search_symbols_tool_call(client):
@@ -212,11 +212,12 @@ def test_every_tool_call_produces_one_telemetry_line(client, mock_repo):
     _mcp_tool_call(client, session_id, "search_symbols", {"query": "format currency"}, request_id=3)
     _mcp_tool_call(client, session_id, "get_symbol", {"symbol_id": symbol_id}, request_id=4)
     _mcp_tool_call(client, session_id, "expand_dependencies", {"symbol_id": symbol_id, "depth": 1}, request_id=5)
+    _mcp_tool_call(client, session_id, "analyze_impact", {"symbol_id": symbol_id, "depth": 2}, request_id=6)
 
     log_path = mock_repo / ".loupe" / "logs" / "retrieval" / f"{session_id}.jsonl"
     assert log_path.exists()
     lines = log_path.read_text().strip().splitlines()
-    assert len(lines) == 4
+    assert len(lines) == 5
 
     tool_names = set()
     for line in lines:
@@ -226,4 +227,4 @@ def test_every_tool_call_produces_one_telemetry_line(client, mock_repo):
         assert entry["output_size_bytes"] >= 0
         assert entry["session_id"] == session_id
         tool_names.add(entry["tool_name"])
-    assert tool_names == {"list_symbols", "search_symbols", "get_symbol", "expand_dependencies"}
+    assert tool_names == {"list_symbols", "search_symbols", "get_symbol", "expand_dependencies", "analyze_impact"}

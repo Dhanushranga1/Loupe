@@ -73,11 +73,13 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         name="loupe",
         description="AST-aware context orchestration for Claude — surgical symbol retrieval over a codebase",
         headers=["mcp-session-id"],
-        # Only the four documented tools should ever reach Claude as callable
-        # MCP tools (addendum's explicit tool-count ceiling) — plain HTTP
+        # Only the documented tools should ever reach Claude as callable MCP
+        # tools (addendum's explicit tool-count ceiling) — plain HTTP
         # introspection endpoints like /loupe/version must not silently
-        # become a 5th tool just by living in the same FastAPI app.
-        include_operations=["list_symbols", "search_symbols", "get_symbol", "expand_dependencies"],
+        # become a tool just by living in the same FastAPI app. E1 adds
+        # analyze_impact as a real 5th tool (docs/loupe-extensions.md's own
+        # running tool-budget check already accounts for this one).
+        include_operations=["list_symbols", "search_symbols", "get_symbol", "expand_dependencies", "analyze_impact"],
     )
     mcp.mount_http()
 
