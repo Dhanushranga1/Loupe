@@ -31,6 +31,8 @@ class EdgeType(str, Enum):
     CALLS = "calls"
     IMPORTS = "imports"
     INHERITS = "inherits"
+    TESTS = "tests"  # added by E2 (docs/loupe-extensions.md) — added post-hoc by graph/test_linkage.py,
+    # not resolved here alongside calls/imports/inherits
 
 
 @dataclass

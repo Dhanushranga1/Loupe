@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from loupe_core.graph.builder import LoupeGraph, ParsedFile, build_graph
+from loupe_core.graph.test_linkage import link_tests
 from loupe_core.parsing.extractor import extract_symbols
 from loupe_core.parsing.incremental import FileIndexCache
 from loupe_core.parsing.languages import get_parser
@@ -147,6 +148,7 @@ def bootstrap(repo_root: Path, config: LoupeConfig, embedding_model: object | No
 
     graph = build_graph(list(parsed_files.values()))
     all_symbols = [s for symbols in symbols_by_file.values() for s in symbols]
+    link_tests(graph.graph, {s.id: s for s in all_symbols})
 
     lexical_index = LexicalIndex(all_symbols)
     semantic_index = SemanticIndex(
@@ -209,6 +211,7 @@ def update_index(index: LoupeIndex, changed_rel_paths: set[str]) -> LoupeIndex:
 
     graph = build_graph(list(parsed_files.values()))
     all_symbols = [s for pf in parsed_files.values() for s in pf.symbols]
+    link_tests(graph.graph, {s.id: s for s in all_symbols})
 
     lexical_index = LexicalIndex(all_symbols)
     semantic_index = SemanticIndex(

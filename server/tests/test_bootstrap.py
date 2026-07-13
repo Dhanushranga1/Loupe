@@ -8,16 +8,28 @@ import pytest
 from app import bootstrap as bootstrap_module
 from app.bootstrap import bootstrap
 from app.config import load_config
+from loupe_core.graph.builder import EdgeType
 
 PHASE1_FIXTURES = Path(__file__).parent.parent.parent / "core" / "tests" / "fixtures" / "phase1"
 PHASE1_FILES = ["utils.py", "models.py", "services.py", "handlers.py", "circular_a.py", "circular_b.py"]
 PHASE1_SYMBOL_COUNT = 16  # utils(2) + models(4) + services(3) + handlers(5) + circular_a(1) + circular_b(1)
+
+E2_FIXTURES = Path(__file__).parent.parent.parent / "core" / "tests" / "fixtures" / "e2"
+E2_FILES = ["utils.py", "test_utils.py"]
 
 
 @pytest.fixture
 def mock_repo(tmp_path, monkeypatch):
     for f in PHASE1_FILES:
         shutil.copy(PHASE1_FIXTURES / f, tmp_path / f)
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def e2_repo(tmp_path, monkeypatch):
+    for f in E2_FILES:
+        shutil.copy(E2_FIXTURES / f, tmp_path / f)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -108,3 +120,19 @@ def test_bootstrapped_index_graph_and_lexical_search_are_wired_correctly(mock_re
     results = index.lexical_index.query("format currency", top_k=3)
     ranked_names = [index.symbol_by_id(symbol_id).qualified_name for symbol_id, _ in results]
     assert "format_currency" in ranked_names
+
+
+def test_bootstrap_wires_real_tests_edges_into_the_live_graph(e2_repo):
+    """E2's link_tests() is only useful if bootstrap() actually calls it — verified end-to-end
+    against a real repo with a real test file, not just at the core function's own unit-test level."""
+    config = load_config(e2_repo, global_config_path=e2_repo / "no-global.yaml")
+    index = bootstrap(e2_repo, config)
+
+    format_currency = next(s for s in index.symbols if s.qualified_name == "format_currency")
+    test_edges = [
+        (u, v)
+        for u, v, data in index.graph.graph.in_edges(format_currency.id, data=True)
+        if data.get("edge_type") == EdgeType.TESTS
+    ]
+    tester_names = {index.symbol_by_id(u).qualified_name for u, _ in test_edges}
+    assert tester_names == {"test_format_currency", "check_currency_formatting"}

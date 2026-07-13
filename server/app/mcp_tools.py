@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from loupe_core.governor.budget import symbol_extraction_cost
 from loupe_core.governor.knapsack import KnapsackCandidate
 from loupe_core.governor.session import HARD_CEILING, request_symbols
+from loupe_core.graph.builder import EdgeType
 from loupe_core.graph.impact import analyze_impact as graph_analyze_impact
 from loupe_core.graph.traversal import expand_dependencies as graph_expand_dependencies
 from loupe_core.parsing.schema import Symbol
@@ -145,8 +146,12 @@ def expand_dependencies_impl(
     symbol_id: str,
     depth: int = 1,
     direction: Literal["outgoing", "incoming", "both"] = "outgoing",
+    edge_type: Literal["calls", "imports", "inherits", "tests"] | None = None,
 ) -> list[SymbolSummary]:
-    reachable_ids = graph_expand_dependencies(index.graph.graph, symbol_id, depth=depth, direction=direction)
+    edge_type_filter = EdgeType(edge_type) if edge_type is not None else None
+    reachable_ids = graph_expand_dependencies(
+        index.graph.graph, symbol_id, depth=depth, direction=direction, edge_type=edge_type_filter
+    )
     symbols = [s for s in (index.symbol_by_id(sid) for sid in reachable_ids) if s is not None]
     return [_to_summary(s) for s in _sorted_by_file_and_byte(symbols)]
 
@@ -240,9 +245,10 @@ async def expand_dependencies_route(
     symbol_id: str,
     depth: int = 1,
     direction: Literal["outgoing", "incoming", "both"] = "outgoing",
+    edge_type: Literal["calls", "imports", "inherits", "tests"] | None = None,
 ) -> list[SymbolSummary]:
     index: LoupeIndex = request.app.state.index
-    return expand_dependencies_impl(index, symbol_id, depth=depth, direction=direction)
+    return expand_dependencies_impl(index, symbol_id, depth=depth, direction=direction, edge_type=edge_type)
 
 
 @router.get("/analyze_impact", operation_id="analyze_impact")
