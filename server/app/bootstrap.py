@@ -29,7 +29,7 @@ from loupe_core.retrieval.semantic import SemanticIndex
 
 from .config import INDEX_SCHEMA_VERSION, LoupeConfig
 
-LOUPE_SUBDIRS = ["cache", "logs/retrieval", "logs/sessions", "eval"]
+LOUPE_SUBDIRS = ["cache", "logs/retrieval", "logs/sessions", "logs/feedback", "eval"]
 DEFAULT_IGNORED_DIR_NAMES = {"__pycache__", ".venv", "venv", "node_modules", "dist", "build", ".git", ".loupe"}
 
 

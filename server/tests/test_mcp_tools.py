@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from sentence_transformers import SentenceTransformer
 
 from app.bootstrap import LoupeIndex
+from app.feedback import FeedbackStore
 from app.mcp_tools import (
     DeniedResponse,
     GetSymbolResponse,
@@ -22,6 +23,7 @@ from app.mcp_tools import (
     list_symbols_impl,
     sanitize_source,
     search_symbols_impl,
+    submit_feedback_impl,
 )
 from app.session_manager import SessionManager
 from loupe_core.governor.session import HARD_CEILING
@@ -164,6 +166,23 @@ def test_analyze_impact_leaf_symbol_returns_empty_lists(test_index):
 
     assert report.directly_affected == []
     assert report.transitively_affected == []
+
+
+# --------------------------------------------------------------------------
+# submit_feedback (E3 — optional, MCP-visible path; docs/loupe-extensions.md)
+# --------------------------------------------------------------------------
+
+
+def test_submit_feedback_impl_writes_through_with_claude_self_report_source(tmp_path):
+    store = FeedbackStore(tmp_path / "logs" / "feedback")
+
+    response = submit_feedback_impl(store, "log-1", "helpful", note="looked right")
+
+    assert response.status == "recorded"
+    entries = store.all_by_log_id()
+    assert entries["log-1"].rating == "helpful"
+    assert entries["log-1"].note == "looked right"
+    assert entries["log-1"].source == "claude_self_report"
 
 
 # --------------------------------------------------------------------------

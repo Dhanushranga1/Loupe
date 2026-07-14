@@ -1,5 +1,6 @@
 """MCP tool definitions — the four Phase 4 tools plus E1's `analyze_impact`
-(docs/phase-4-systems.md §3, docs/loupe-extensions.md E1).
+and E3's optional `submit_feedback`
+(docs/phase-4-systems.md §3, docs/loupe-extensions.md E1/E3).
 
 Governor scoping (§3, stated explicitly since it wasn't nailed down until
 this phase): `list_symbols`, `search_symbols`, `expand_dependencies`, and
@@ -33,6 +34,7 @@ from loupe_core.graph.traversal import expand_dependencies as graph_expand_depen
 from loupe_core.parsing.schema import Symbol
 
 from .bootstrap import LoupeIndex
+from .feedback import FeedbackStore
 from .session_manager import SessionManager, session_id_from_request
 from .telemetry import log_tool_call
 
@@ -172,6 +174,22 @@ def analyze_impact_impl(index: LoupeIndex, symbol_id: str, depth: int = 2) -> Im
     )
 
 
+class SubmitFeedbackResponse(BaseModel):
+    status: Literal["recorded"] = "recorded"
+
+
+def submit_feedback_impl(
+    feedback_store: FeedbackStore, retrieval_log_id: str, rating: Literal["helpful", "not_helpful"], note: str | None = None
+) -> SubmitFeedbackResponse:
+    # E3 (docs/loupe-extensions.md): the secondary, optional MCP-visible path
+    # for Claude to solicit feedback conversationally — the dashboard's plain
+    # POST /feedback (main.py) is expected to carry most real usage, but both
+    # write through the same FeedbackStore, tagged by `source` so a training
+    # query can tell them apart if that ever matters.
+    feedback_store.submit(retrieval_log_id, rating, note, source="claude_self_report")
+    return SubmitFeedbackResponse()
+
+
 def get_symbol_impl(
     index: LoupeIndex,
     session_manager: SessionManager,
@@ -256,3 +274,12 @@ async def expand_dependencies_route(
 async def analyze_impact_route(request: Request, symbol_id: str, depth: int = 2) -> ImpactReportResponse:
     index: LoupeIndex = request.app.state.index
     return analyze_impact_impl(index, symbol_id, depth=depth)
+
+
+@router.get("/submit_feedback", operation_id="submit_feedback")
+@log_tool_call("submit_feedback")
+async def submit_feedback_route(
+    request: Request, retrieval_log_id: str, rating: Literal["helpful", "not_helpful"], note: str | None = None
+) -> SubmitFeedbackResponse:
+    feedback_store: FeedbackStore = request.app.state.feedback_store
+    return submit_feedback_impl(feedback_store, retrieval_log_id, rating, note=note)

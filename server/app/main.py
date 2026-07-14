@@ -13,12 +13,13 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi_mcp import FastApiMCP
 
 from . import mcp_tools
 from .bootstrap import bootstrap
 from .config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, MCP_TOOL_SCHEMA_VERSION, load_config
+from .feedback import FeedbackRequest, FeedbackStore
 from .indexer_worker import IndexerWorker
 from .session_manager import SessionManager
 from .telemetry import TelemetryWriter
@@ -40,6 +41,7 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         app.state.index = bootstrap(resolved_repo_root, config)
         app.state.session_manager = SessionManager()
         app.state.telemetry = TelemetryWriter(app.state.index.loupe_dir / "logs" / "retrieval")
+        app.state.feedback_store = FeedbackStore(app.state.index.loupe_dir / "logs" / "feedback")
 
         indexer_worker = IndexerWorker(app, resolved_repo_root)
         indexer_worker.start()
@@ -68,6 +70,17 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         # whose internals belong to a third-party library we don't own.
         return {"index_schema_version": INDEX_SCHEMA_VERSION, "mcp_tool_schema_version": MCP_TOOL_SCHEMA_VERSION}
 
+    @app.post("/feedback", operation_id="submit_dashboard_feedback")
+    async def submit_dashboard_feedback(feedback: FeedbackRequest, request: Request) -> dict[str, str]:
+        # E3's primary path (docs/loupe-extensions.md): a human clicking a
+        # button in the Lens dashboard hits this plain HTTP endpoint
+        # directly — deliberately not an MCP tool, so it costs nothing
+        # against the tool-count budget (mcp_tools.py's submit_feedback is
+        # the separate, optional, MCP-visible path for Claude itself).
+        store: FeedbackStore = request.app.state.feedback_store
+        store.submit(feedback.retrieval_log_id, feedback.rating, feedback.note, source="dashboard")
+        return {"status": "recorded"}
+
     mcp = FastApiMCP(
         app,
         name="loupe",
@@ -75,11 +88,19 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         headers=["mcp-session-id"],
         # Only the documented tools should ever reach Claude as callable MCP
         # tools (addendum's explicit tool-count ceiling) — plain HTTP
-        # introspection endpoints like /loupe/version must not silently
-        # become a tool just by living in the same FastAPI app. E1 adds
-        # analyze_impact as a real 5th tool (docs/loupe-extensions.md's own
-        # running tool-budget check already accounts for this one).
-        include_operations=["list_symbols", "search_symbols", "get_symbol", "expand_dependencies", "analyze_impact"],
+        # introspection/write endpoints like /loupe/version and POST
+        # /feedback must not silently become a tool just by living in the
+        # same FastAPI app. E1 adds analyze_impact (5th) and E3 adds the
+        # optional submit_feedback (6th) — both accounted for by
+        # docs/loupe-extensions.md's own running tool-budget check.
+        include_operations=[
+            "list_symbols",
+            "search_symbols",
+            "get_symbol",
+            "expand_dependencies",
+            "analyze_impact",
+            "submit_feedback",
+        ],
     )
     mcp.mount_http()
 
