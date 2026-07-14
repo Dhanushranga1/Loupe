@@ -19,6 +19,7 @@ from fastapi_mcp import FastApiMCP
 from . import mcp_tools
 from .bootstrap import bootstrap
 from .config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, MCP_TOOL_SCHEMA_VERSION, load_config
+from .conventions import register_conventions_resource
 from .feedback import FeedbackRequest, FeedbackStore
 from .indexer_worker import IndexerWorker
 from .session_manager import SessionManager
@@ -102,6 +103,12 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
             "submit_feedback",
         ],
     )
+    # E4 (docs/loupe-extensions.md): registered directly on the MCP SDK
+    # `Server` FastApiMCP builds internally, not on `mcp_tools.router` — see
+    # conventions.py's module docstring for why this is a Resource, not a
+    # route that would need an include_operations entry.
+    register_conventions_resource(mcp.server, lambda: app.state.index.parsed_files.values())
+
     mcp.mount_http()
 
     return app

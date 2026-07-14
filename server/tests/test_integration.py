@@ -276,3 +276,45 @@ def test_dashboard_feedback_is_a_plain_http_endpoint_not_an_mcp_tool(client, moc
     assert entry["retrieval_log_id"] == "log-abc"
     assert entry["rating"] == "helpful"
     assert entry["source"] == "dashboard"
+
+
+# --------------------------------------------------------------------------
+# E4: conventions://summary — a real MCP Resource, not a Tool
+# --------------------------------------------------------------------------
+
+
+def test_conventions_summary_is_a_resource_not_a_tool(client):
+    session_id = _mcp_initialize(client)
+
+    tools_response = client.post(
+        "/mcp",
+        headers={"Accept": "application/json, text/event-stream", "Mcp-Session-Id": session_id},
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    tool_names = {t["name"] for t in tools_response.json()["result"]["tools"]}
+    assert "conventions_summary" not in tool_names
+
+    resources_response = client.post(
+        "/mcp",
+        headers={"Accept": "application/json, text/event-stream", "Mcp-Session-Id": session_id},
+        json={"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}},
+    )
+    resources = resources_response.json()["result"]["resources"]
+    assert any(r["uri"] == "conventions://summary" for r in resources)
+
+    read_response = client.post(
+        "/mcp",
+        headers={"Accept": "application/json, text/event-stream", "Mcp-Session-Id": session_id},
+        json={
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "resources/read",
+            "params": {"uri": "conventions://summary"},
+        },
+    )
+    contents = read_response.json()["result"]["contents"]
+    assert len(contents) == 1
+    report = json.loads(contents[0]["text"])
+    assert set(report.keys()) == {"error_handling", "docstrings", "imports"}
+    assert set(report["docstrings"].keys()) == {"coverage_pct", "dominant_style"}
+    assert set(report["imports"].keys()) >= {"dominant_style"}
