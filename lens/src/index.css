@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+/* Map design tokens onto Tailwind v4's CSS-first theme so utilities like
+   bg-surface / text-dim / border-border work directly, while the
+   underlying --bg/--surface/etc. custom properties still switch at runtime
+   under the dark-mode media query below (theme() calls are compile-time,
+   var() indirection keeps them live). */
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+  --color-text-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-mod-app: var(--mod-app);
+  --color-mod-eval: var(--mod-eval);
+  --color-mod-retrieval: var(--mod-retrieval);
+  --color-mod-parsing: var(--mod-parsing);
+  --color-mod-graph: var(--mod-graph);
+  --color-mod-governor: var(--mod-governor);
+  --color-mod-storage: var(--mod-storage);
+  --color-mod-bandit: var(--mod-bandit);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-mono);
+}
+
+:root {
+  --bg: #f3f1ec;
+  --surface: #ffffff;
+  --surface-2: #ebe8e1;
+  --surface-3: #e1ddd3;
+  --border: #d8d3c7;
+  --text: #201d18;
+  --text-dim: #5c574c;
+  --text-faint: #948d7d;
+  --accent: #b3701f;
+  --accent-soft: rgba(179, 112, 31, 0.12);
+  --good: #3f7d4f;
+  --good-soft: rgba(63, 125, 79, 0.12);
+  --bad: #b3401f;
+  --bad-soft: rgba(179, 64, 31, 0.12);
+
+  --mod-app: #4d76a8;
+  --mod-eval: #4d8d55;
+  --mod-retrieval: #7a5fa8;
+  --mod-parsing: #a85f5f;
+  --mod-graph: #3f8d87;
+  --mod-governor: #8d7a2f;
+  --mod-storage: #6b7280;
+  --mod-bandit: #a86440;
+
+  --font-ui: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0e13;
+    --surface: #131a22;
+    --surface-2: #1a2330;
+    --surface-3: #212c3a;
+    --border: #26313f;
+    --text: #e8edf2;
+    --text-dim: #8b98a8;
+    --text-faint: #57667a;
+    --accent: #e0a458;
+    --accent-soft: rgba(224, 164, 88, 0.14);
+    --good: #7fb88a;
+    --good-soft: rgba(127, 184, 138, 0.14);
+    --bad: #d98868;
+    --bad-soft: rgba(217, 136, 104, 0.14);
+
+    --mod-app: #7098c9;
+    --mod-eval: #7fae83;
+    --mod-retrieval: #9b87c4;
+    --mod-parsing: #c48787;
+    --mod-graph: #6bb0ac;
+    --mod-governor: #b5a15a;
+    --mod-storage: #8a93a6;
+    --mod-bandit: #c98a6b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}

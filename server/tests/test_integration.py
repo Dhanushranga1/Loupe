@@ -318,3 +318,69 @@ def test_conventions_summary_is_a_resource_not_a_tool(client):
     assert set(report.keys()) == {"error_handling", "docstrings", "imports"}
     assert set(report["docstrings"].keys()) == {"coverage_pct", "dominant_style"}
     assert set(report["imports"].keys()) >= {"dominant_style"}
+
+
+# --------------------------------------------------------------------------
+# Lens dashboard: plain REST endpoints, not MCP tools
+# --------------------------------------------------------------------------
+
+
+def test_dashboard_endpoints_are_not_mcp_tools(client):
+    session_id = _mcp_initialize(client)
+    response = client.post(
+        "/mcp",
+        headers={"Accept": "application/json, text/event-stream", "Mcp-Session-Id": session_id},
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    tool_names = {t["name"] for t in response.json()["result"]["tools"]}
+    assert tool_names.isdisjoint({"dashboard_status", "dashboard_graph", "dashboard_conventions", "dashboard_telemetry", "dashboard_feedback"})
+
+
+def test_dashboard_status_reports_real_index_state(client):
+    response = client.get("/dashboard/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["symbol_count"] == 16
+    assert body["file_count"] == 6
+    assert body["languages"] == ["python"]
+
+
+def test_dashboard_graph_returns_real_nodes_and_edges(client):
+    response = client.get("/dashboard/graph")
+    assert response.status_code == 200
+    body = response.json()
+    names = {n["name"] for n in body["nodes"]}
+    assert "format_currency" in names
+    assert len(body["edges"]) > 0
+    assert all(set(e.keys()) == {"source", "target", "type"} for e in body["edges"])
+
+
+def test_dashboard_conventions_returns_the_same_shape_as_the_mcp_resource(client):
+    response = client.get("/dashboard/conventions")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"error_handling", "docstrings", "imports"}
+
+
+def test_dashboard_telemetry_reflects_real_tool_calls(client):
+    session_id = _mcp_initialize(client)
+    _mcp_tool_call(client, session_id, "search_symbols", {"query": "format currency"}, request_id=2)
+
+    response = client.get("/dashboard/telemetry")
+    assert response.status_code == 200
+    entries = response.json()
+    assert any(e["tool_name"] == "search_symbols" and e["session_id"] == session_id for e in entries)
+
+
+def test_dashboard_feedback_reflects_submissions_via_post_feedback(client):
+    client.post("/feedback", json={"retrieval_log_id": "dash-log-1", "rating": "helpful"})
+
+    response = client.get("/dashboard/feedback")
+    assert response.status_code == 200
+    entries = response.json()
+    assert any(e["retrieval_log_id"] == "dash-log-1" and e["rating"] == "helpful" for e in entries)
+
+
+def test_dashboard_endpoints_allow_the_vite_dev_origin_via_cors(client):
+    response = client.get("/dashboard/status", headers={"Origin": "http://localhost:5173"})
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"

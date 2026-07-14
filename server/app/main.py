@@ -14,9 +14,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi_mcp import FastApiMCP
 
-from . import mcp_tools
+from . import dashboard, mcp_tools
 from .bootstrap import bootstrap
 from .config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, MCP_TOOL_SCHEMA_VERSION, load_config
 from .conventions import register_conventions_resource
@@ -24,6 +25,12 @@ from .feedback import FeedbackRequest, FeedbackStore
 from .indexer_worker import IndexerWorker
 from .session_manager import SessionManager
 from .telemetry import TelemetryWriter
+
+# Local-dev origins for lens/ (Vite's default port). Loupe is a local,
+# per-repo tool with no hosted deployment story (loupe-project-guide.md) —
+# there is no "production origin" to add here, only the dev server a
+# contributor runs `npm run dev` with.
+LENS_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 TTL_SWEEP_INTERVAL_SECONDS = 60  # once per minute (§5)
 
@@ -60,7 +67,14 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
             await indexer_worker.stop()
 
     app = FastAPI(title="Loupe", description="AST-aware context orchestration for Claude", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=LENS_DEV_ORIGINS,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
     app.include_router(mcp_tools.router)
+    app.include_router(dashboard.router)
 
     @app.get("/loupe/version", operation_id="loupe_version")
     async def loupe_version() -> dict[str, int]:
