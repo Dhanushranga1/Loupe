@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loupe_scaffold"]
+
+[project]
+name = "loupe_scaffold"
+version = "0.1.0"
+description = "Loupe Scaffold: generates new FastAPI projects via a composable brick system (docs/loupe-scaffold.md)"
+requires-python = ">=3.11"
+dependencies = []
+# A sibling tool to Loupe, not a phase of it and not an MCP tool
+# (docs/loupe-scaffold.md's own framing) — deliberately zero dependency on
+# core/ or server/. loupe new is a one-time interactive CLI command, never
+# something Claude Code calls mid-session.
+
+# No [project.scripts] entry yet: docs/loupe-scaffold.md §6's build order
+# puts the elicitation engine first, on its own, before any CLI wiring or
+# the brick/compose system (which needs the FastAPI adapter's convention
+# taxonomy — doesn't exist in this repo yet). Add loupe-new once cli.py does.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
