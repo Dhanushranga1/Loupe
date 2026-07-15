@@ -51,7 +51,7 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         app.state.telemetry = TelemetryWriter(app.state.index.loupe_dir / "logs" / "retrieval")
         app.state.feedback_store = FeedbackStore(app.state.index.loupe_dir / "logs" / "feedback")
 
-        indexer_worker = IndexerWorker(app, resolved_repo_root)
+        indexer_worker = IndexerWorker(app, resolved_repo_root, extra_exclude_paths=config.index.exclude_paths)
         indexer_worker.start()
         app.state.indexer_worker = indexer_worker
 

@@ -97,8 +97,10 @@ class DeniedResponse(BaseModel):
 class ImpactReportResponse(BaseModel):
     symbol_id: str
     directly_affected: list[SymbolSummary]
+    directly_affected_total: int  # real count before any max_affected truncation
     transitively_affected: list[SymbolSummary]
-    high_centrality_warnings: list[str]  # symbol_ids, highest PageRank first
+    transitively_affected_total: int
+    high_centrality_warnings: list[SymbolSummary]  # was raw symbol_id strings — not human-readable, a real gap
     affected_route_count: int
 
 
@@ -158,18 +160,39 @@ def expand_dependencies_impl(
     return [_to_summary(s) for s in _sorted_by_file_and_byte(symbols)]
 
 
-def analyze_impact_impl(index: LoupeIndex, symbol_id: str, depth: int = 2) -> ImpactReportResponse:
+DEFAULT_MAX_AFFECTED = 30  # real gap found via a real ~900-symbol repo: an ungoverned, uncapped
+# analyze_impact call on a widely-used symbol (187 direct callers) produced a 96K-char response
+# that blew past the calling tool's own output-size limit. Core's analyze_impact() still computes
+# and returns the full, untruncated result (correctness); this cap is presentation-only, applied
+# here, with the real totals preserved in *_total so truncation is visible, not silent.
+
+
+def _capped_by_pagerank(
+    summaries: list, symbols_by_id: dict[str, Symbol], pagerank_scores: dict[str, float], limit: int
+) -> list[SymbolSummary]:
+    ranked = sorted(summaries, key=lambda s: (-pagerank_scores.get(s.symbol_id, 0.0), s.symbol_id))
+    return [_to_summary(symbols_by_id[s.symbol_id]) for s in ranked[:limit]]
+
+
+def analyze_impact_impl(
+    index: LoupeIndex, symbol_id: str, depth: int = 2, max_affected: int = DEFAULT_MAX_AFFECTED
+) -> ImpactReportResponse:
     if index.symbol_by_id(symbol_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown symbol_id: {symbol_id!r}")
 
     symbols_by_id = {s.id: s for s in index.symbols}
-    report = graph_analyze_impact(index.graph.graph, symbols_by_id, index.graph.pagerank_scores, symbol_id, depth=depth)
+    pagerank_scores = index.graph.pagerank_scores
+    report = graph_analyze_impact(index.graph.graph, symbols_by_id, pagerank_scores, symbol_id, depth=depth)
 
     return ImpactReportResponse(
         symbol_id=symbol_id,
-        directly_affected=[_to_summary(symbols_by_id[s.symbol_id]) for s in report.directly_affected],
-        transitively_affected=[_to_summary(symbols_by_id[s.symbol_id]) for s in report.transitively_affected],
-        high_centrality_warnings=report.high_centrality_warnings,
+        directly_affected=_capped_by_pagerank(report.directly_affected, symbols_by_id, pagerank_scores, max_affected),
+        directly_affected_total=len(report.directly_affected),
+        transitively_affected=_capped_by_pagerank(
+            report.transitively_affected, symbols_by_id, pagerank_scores, max_affected
+        ),
+        transitively_affected_total=len(report.transitively_affected),
+        high_centrality_warnings=[_to_summary(symbols_by_id[sid]) for sid in report.high_centrality_warnings],
         affected_route_count=report.affected_route_count,
     )
 
@@ -271,9 +294,11 @@ async def expand_dependencies_route(
 
 @router.get("/analyze_impact", operation_id="analyze_impact")
 @log_tool_call("analyze_impact")
-async def analyze_impact_route(request: Request, symbol_id: str, depth: int = 2) -> ImpactReportResponse:
+async def analyze_impact_route(
+    request: Request, symbol_id: str, depth: int = 2, max_affected: int = DEFAULT_MAX_AFFECTED
+) -> ImpactReportResponse:
     index: LoupeIndex = request.app.state.index
-    return analyze_impact_impl(index, symbol_id, depth=depth)
+    return analyze_impact_impl(index, symbol_id, depth=depth, max_affected=max_affected)
 
 
 @router.get("/submit_feedback", operation_id="submit_feedback")

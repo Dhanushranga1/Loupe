@@ -73,6 +73,46 @@ def test_index(tmp_path_factory, real_model):
     )
 
 
+@pytest.fixture(scope="module")
+def many_callers_index(tmp_path_factory, real_model):
+    """A hub function with 10 real direct callers — PHASE1_FIXTURES has nothing this
+    heavily called, and analyze_impact's max_affected truncation (found via a real
+    187-caller function in a real ~900-symbol repo) needs a fixture bigger than 1-2
+    callers to actually exercise the cap."""
+    import os
+
+    repo = tmp_path_factory.mktemp("many_callers_repo")
+    (repo / "core_logic.py").write_text("def hub_function():\n    return 1\n")
+    caller_lines = "\n\n".join(
+        f"def caller_{i:02d}():\n    return hub_function()" for i in range(10)
+    )
+    (repo / "callers.py").write_text("from core_logic import hub_function\n\n\n" + caller_lines + "\n")
+
+    files = ["core_logic.py", "callers.py"]
+    old_cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        parsed = {f: parse_file(f) for f in files}
+    finally:
+        os.chdir(old_cwd)
+
+    graph = build_graph(list(parsed.values()))
+    all_symbols = [s for pf in parsed.values() for s in pf.symbols]
+    lexical_index = LexicalIndex(all_symbols)
+    semantic_index = SemanticIndex(model=real_model)
+    semantic_index.index(all_symbols)
+
+    return LoupeIndex(
+        repo_root=repo,
+        loupe_dir=repo / ".loupe",
+        parsed_files=parsed,
+        graph=graph,
+        lexical_index=lexical_index,
+        semantic_index=semantic_index,
+        file_cache=FileIndexCache(),
+    )
+
+
 def _by_qualified_name(index: LoupeIndex, name: str):
     return next(s for s in index.symbols if s.qualified_name == name)
 
@@ -165,6 +205,39 @@ def test_analyze_impact_leaf_symbol_returns_empty_lists(test_index):
     report = analyze_impact_impl(test_index, dispatch.id, depth=2)
 
     assert report.directly_affected == []
+
+
+def test_analyze_impact_high_centrality_warnings_are_real_symbol_summaries_not_raw_ids(test_index):
+    """Real usability gap found via a real repo: high_centrality_warnings used to be
+    bare symbol_id strings, useless without a separate lookup. Now full SymbolSummary."""
+    format_currency = _by_qualified_name(test_index, "format_currency")
+
+    report = analyze_impact_impl(test_index, format_currency.id, depth=2)
+
+    for warning in report.high_centrality_warnings:
+        assert warning.qualified_name
+        assert warning.file_path
+
+
+def test_analyze_impact_caps_large_result_sets_but_preserves_the_real_total(many_callers_index):
+    """Real scaling gap found via a real 187-caller function that blew past the calling
+    tool's output-size limit. max_affected caps the returned list; *_total stays the
+    real, uncapped count so truncation is visible, not silent."""
+    hub = _by_qualified_name(many_callers_index, "hub_function")
+
+    report = analyze_impact_impl(many_callers_index, hub.id, depth=2, max_affected=3)
+
+    assert len(report.directly_affected) == 3
+    assert report.directly_affected_total == 10
+
+
+def test_analyze_impact_default_cap_is_not_hit_by_a_small_result_set(many_callers_index):
+    hub = _by_qualified_name(many_callers_index, "hub_function")
+
+    report = analyze_impact_impl(many_callers_index, hub.id, depth=2)
+
+    assert len(report.directly_affected) == 10
+    assert report.directly_affected_total == 10
     assert report.transitively_affected == []
 
 

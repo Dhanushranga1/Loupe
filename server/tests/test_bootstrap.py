@@ -136,3 +136,60 @@ def test_bootstrap_wires_real_tests_edges_into_the_live_graph(e2_repo):
     ]
     tester_names = {index.symbol_by_id(u).qualified_name for u, _ in test_edges}
     assert tester_names == {"test_format_currency", "check_currency_formatting"}
+
+
+# --------------------------------------------------------------------------
+# Regression: full index must actually honor .loupeignore / manifest
+# exclude_paths, not just the built-in default names (found while indexing
+# a real repo with a "backend/.venv-py314-backup/" directory — a stale venv
+# whose name doesn't exactly match ".venv", so it silently got fully parsed
+# and embedded: ~4,000 unwanted files against 69 real ones).
+# --------------------------------------------------------------------------
+
+
+def _write_rogue_venv_lookalike(repo_root: Path, rel_dir: str, package_count: int = 3) -> None:
+    """A directory shaped like a stray venv backup — real, parseable .py files with
+    real symbols, at a name the built-in default list does NOT exactly match."""
+    for i in range(package_count):
+        pkg_dir = repo_root / rel_dir / f"fake_pkg_{i}"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "__init__.py").write_text(f"def vendored_function_{i}():\n    return {i}\n")
+
+
+def test_full_index_respects_loupeignore_for_a_directory_the_default_list_does_not_catch(mock_repo):
+    _write_rogue_venv_lookalike(mock_repo, "backend/.venv-py314-backup")
+    (mock_repo / ".loupeignore").write_text(".venv-py314-backup/\n")
+
+    config = load_config(mock_repo, global_config_path=mock_repo / "no-global.yaml")
+    index = bootstrap(mock_repo, config)
+
+    assert len(index.symbols) == PHASE1_SYMBOL_COUNT, "the rogue lookalike directory must be excluded via .loupeignore"
+    assert not any("fake_pkg" in s.file_path for s in index.symbols)
+
+
+def test_full_index_respects_manifest_exclude_paths_for_the_same_case(mock_repo):
+    _write_rogue_venv_lookalike(mock_repo, "backend/.venv-py314-backup")
+    (mock_repo / "loupe.manifest.yaml").write_text(
+        "schema_version: 1\nlanguages: [python]\nindex:\n  exclude_paths: ['.venv-py314-backup']\n"
+    )
+
+    config = load_config(mock_repo, global_config_path=mock_repo / "no-global.yaml")
+    assert config.index.exclude_paths == [".venv-py314-backup"]
+    index = bootstrap(mock_repo, config)
+
+    assert len(index.symbols) == PHASE1_SYMBOL_COUNT
+    assert not any("fake_pkg" in s.file_path for s in index.symbols)
+
+
+def test_full_index_without_any_exclude_config_does_not_silently_exclude_a_lookalike_directory(mock_repo):
+    """The flip side, verified directly: a name that only resembles a default
+    (".venv-py314-backup" vs ".venv") is NOT free — same as any real name, it needs
+    an explicit pattern. This is what makes the two tests above real regression
+    tests and not just "everything gets excluded no matter what" false positives."""
+    _write_rogue_venv_lookalike(mock_repo, "backend/.venv-py314-backup")
+
+    config = load_config(mock_repo, global_config_path=mock_repo / "no-global.yaml")
+    index = bootstrap(mock_repo, config)
+
+    assert len(index.symbols) == PHASE1_SYMBOL_COUNT + 3
+    assert any("fake_pkg" in s.file_path for s in index.symbols)

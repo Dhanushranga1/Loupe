@@ -78,6 +78,7 @@ def build_graph(parsed_files: list[ParsedFile]) -> LoupeGraph:
     symbols_by_id, qualified_index, bare_name_index = _build_name_index(parsed_files)
     import_indexes = {pf.file_path: _build_import_index(pf) for pf in parsed_files}
     def_nodes = {pf.file_path: _map_symbols_to_nodes(pf) for pf in parsed_files}
+    repo_module_stems = {Path(pf.file_path).stem for pf in parsed_files}
 
     graph = nx.DiGraph()
     graph.add_nodes_from(symbols_by_id)
@@ -124,6 +125,7 @@ def build_graph(parsed_files: list[ParsedFile]) -> LoupeGraph:
                     bare_name_index=bare_name_index,
                     symbols_by_id=symbols_by_id,
                     base_class_ids=base_class_ids,
+                    repo_module_stems=repo_module_stems,
                 )
                 if outcome == "resolved":
                     _add_edge(graph, symbol.id, target_id, EdgeType.CALLS)
@@ -256,6 +258,7 @@ def _resolve_call(
     bare_name_index: dict[str, list[str]],
     symbols_by_id: dict[str, Symbol],
     base_class_ids: dict[str, list[str]],
+    repo_module_stems: set[str],
 ) -> tuple[str, str | None]:
     """Returns ("resolved", symbol_id) or (reason, None)."""
     if callee.type == "attribute":
@@ -267,11 +270,22 @@ def _resolve_call(
             return _resolve_self_call(attr_name, caller, qualified_index, symbols_by_id, base_class_ids)
 
         # Extension of §5's "orders" example: base.attr where base is a known
-        # import (module or otherwise) is resolved via bare_name_index on the
-        # attribute name — this is what correctly classifies stdlib/third-party
-        # calls like json.dumps(...) as "external" rather than "no_type_inference".
+        # *first-party* whole-module import (its target matches one of this
+        # repo's own file stems) is resolved via bare_name_index on the
+        # attribute name. Gating on repo_module_stems is load-bearing, not
+        # cosmetic: without it, `import re; re.search(...)` in a large repo
+        # that also happens to define an unrelated function literally named
+        # `search` anywhere at all would silently resolve to that unrelated
+        # symbol instead of being correctly classified "external" — a real
+        # false-positive CALLS edge found via a real ~900-symbol codebase,
+        # not a hypothetical. A stdlib/third-party import's target never
+        # matches a file actually being indexed, so it now falls through to
+        # Rule 6 (unresolved) instead of guessing.
         if base.type == "identifier" and _node_text(base, source_bytes) in import_index:
-            return _resolve_via_bare_name_index(attr_name, bare_name_index)
+            local_name = _node_text(base, source_bytes)
+            if import_index[local_name] in repo_module_stems:
+                return _resolve_via_bare_name_index(attr_name, bare_name_index)
+            return "external", None
 
         # Rule 6: attribute access on anything else (local var, call result, ...)
         return "no_type_inference", None

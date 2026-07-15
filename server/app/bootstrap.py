@@ -28,9 +28,9 @@ from loupe_core.retrieval.lexical import LexicalIndex
 from loupe_core.retrieval.semantic import SemanticIndex
 
 from .config import INDEX_SCHEMA_VERSION, LoupeConfig
+from .ignore import is_path_ignored, load_loupeignore_patterns
 
 LOUPE_SUBDIRS = ["cache", "logs/retrieval", "logs/sessions", "logs/feedback", "eval"]
-DEFAULT_IGNORED_DIR_NAMES = {"__pycache__", ".venv", "venv", "node_modules", "dist", "build", ".git", ".loupe"}
 
 
 @dataclass
@@ -58,12 +58,18 @@ def _ensure_loupe_dirs(loupe_dir: Path) -> None:
         (loupe_dir / sub).mkdir(parents=True, exist_ok=True)
 
 
-def _discover_python_files(repo_root: Path) -> list[str]:
-    """Relative, forward-slash-normalized paths of every *.py file under repo_root."""
+def _discover_python_files(repo_root: Path, ignore_patterns: list[str]) -> list[str]:
+    """Relative, forward-slash-normalized paths of every *.py file under repo_root.
+
+    `ignore_patterns` is `.loupeignore` lines plus the manifest's
+    `index.exclude_paths` — previously this function only ever checked the
+    built-in default names (see `ignore.py`'s module docstring for the real
+    bug that gap caused).
+    """
     paths = []
     for p in repo_root.rglob("*.py"):
         rel = p.relative_to(repo_root)
-        if any(part in DEFAULT_IGNORED_DIR_NAMES for part in rel.parts):
+        if is_path_ignored(rel.as_posix(), ignore_patterns):
             continue
         paths.append(rel.as_posix())
     return sorted(paths)
@@ -132,7 +138,8 @@ def bootstrap(repo_root: Path, config: LoupeConfig, embedding_model: object | No
     parsed_files: dict[str, ParsedFile] = {}
     symbols_by_file: dict[str, list[Symbol]] = {}
 
-    for rel_path in _discover_python_files(repo_root):
+    ignore_patterns = load_loupeignore_patterns(repo_root) + config.index.exclude_paths
+    for rel_path in _discover_python_files(repo_root, ignore_patterns):
         source_bytes = Path(rel_path).read_bytes()
         tree = get_parser("python").parse(source_bytes)
 

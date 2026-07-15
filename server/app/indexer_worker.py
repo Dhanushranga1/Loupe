@@ -16,7 +16,6 @@ is in progress — there is no blocking wait on an in-flight reindex.
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import time
 from pathlib import Path
 
@@ -25,23 +24,10 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from .bootstrap import update_index
+from .ignore import is_path_ignored, load_loupeignore_patterns
 
 DEBOUNCE_WINDOW_SECONDS = 0.3
 CHECK_INTERVAL_SECONDS = 0.5
-DEFAULT_IGNORED_DIR_NAMES = {"__pycache__", ".venv", "venv", "node_modules", "dist", "build", ".git", ".loupe"}
-
-
-def _load_loupeignore_patterns(repo_root: Path) -> list[str]:
-    path = repo_root / ".loupeignore"
-    if not path.exists():
-        return []
-    return [line.strip() for line in path.read_text().splitlines() if line.strip() and not line.startswith("#")]
-
-
-def _is_ignored(rel_path: str, ignore_patterns: list[str]) -> bool:
-    if any(part in DEFAULT_IGNORED_DIR_NAMES for part in Path(rel_path).parts):
-        return True
-    return any(fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(rel_path, f"{pattern}/*") for pattern in ignore_patterns)
 
 
 class _ChangeCollector(FileSystemEventHandler):
@@ -65,7 +51,7 @@ class _ChangeCollector(FileSystemEventHandler):
             rel_path = str(path.relative_to(self.repo_root))
         except ValueError:
             return
-        if _is_ignored(rel_path, self.ignore_patterns):
+        if is_path_ignored(rel_path, self.ignore_patterns):
             return
         self.pending[rel_path] = time.monotonic()
 
@@ -90,10 +76,11 @@ class _ChangeCollector(FileSystemEventHandler):
 class IndexerWorker:
     """Owns the watchdog Observer + debounce loop; swaps `app.state.index` on settled changes."""
 
-    def __init__(self, app: FastAPI, repo_root: Path) -> None:
+    def __init__(self, app: FastAPI, repo_root: Path, extra_exclude_paths: list[str] | None = None) -> None:
         self.app = app
         self.repo_root = repo_root
-        self.collector = _ChangeCollector(repo_root, _load_loupeignore_patterns(repo_root))
+        ignore_patterns = load_loupeignore_patterns(repo_root) + list(extra_exclude_paths or [])
+        self.collector = _ChangeCollector(repo_root, ignore_patterns)
         self._observer = Observer()
         self._task: asyncio.Task | None = None
         self.reparse_count = 0  # exposed for tests: how many settled-change batches were processed
