@@ -30,6 +30,8 @@
   --color-mod-bandit: var(--mod-bandit);
   --font-sans: var(--font-ui);
   --font-mono: var(--font-mono);
+  --radius-panel: 4px;
+  --radius-chip: 3px;
 }
 
 :root {
@@ -127,4 +129,111 @@ code,
 }
 .scroll-thin::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Instrument-panel motifs: a loupe inspects one thing precisely, so the
+   chrome around the data leans on sharp, deliberate marks (viewfinder
+   corner brackets, a faint measurement grid) rather than soft consumer-app
+   rounding — the goal is "optical instrument," not "admin template." */
+
+.grid-texture {
+  background-image:
+    linear-gradient(to right, var(--border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+  opacity: 0.35;
+}
+
+.panel-bracket {
+  position: relative;
+}
+.panel-bracket::before,
+.panel-bracket::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.panel-bracket::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1.5px solid var(--accent);
+  border-left: 1.5px solid var(--accent);
+}
+.panel-bracket::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1.5px solid var(--accent);
+  border-right: 1.5px solid var(--accent);
+}
+
+kbd.key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--good) 0%, transparent);
+  }
+}
+.status-live {
+  position: relative;
+}
+.status-live::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-live::after {
+    animation: none;
+  }
+}
+
+@keyframes scan-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+.scan-bar {
+  position: relative;
+  overflow: hidden;
+}
+.scan-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 25%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.6;
+  animation: scan-sweep 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-bar::after {
+    animation: none;
+    display: none;
+  }
 }

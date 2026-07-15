@@ -126,12 +126,12 @@ function GraphInner({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Find a symbol…"
-            className="w-60 rounded-md border border-border bg-surface-2 py-2 pl-8 pr-3 font-mono text-[13px] outline-none focus:border-accent"
+            className="w-60 rounded-[var(--radius-panel)] border border-border bg-surface-2 py-2 pl-8 pr-3 font-mono text-[13px] outline-none focus:border-accent"
           />
         </div>
       </div>
 
-      <div className="absolute bottom-4 left-4 flex max-w-[200px] flex-col gap-1.5 rounded-xl border border-border bg-surface p-3 shadow-lg">
+      <div className="absolute bottom-4 left-4 flex max-w-[200px] flex-col gap-1.5 rounded-[var(--radius-panel)] border border-border bg-surface p-3 shadow-lg">
         <div className="mb-0.5 text-[10px] uppercase tracking-wide text-text-faint">Modules</div>
         {modules.map((mod) => (
           <button
@@ -148,14 +148,14 @@ function GraphInner({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }
         ))}
       </div>
 
-      <div className="absolute bottom-4 right-4 rounded-lg border border-border bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-text-faint">
+      <div className="absolute bottom-4 right-4 rounded-[var(--radius-panel)] border border-border bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-text-faint">
         drag canvas to pan · scroll to zoom
         <br />
         drag a node to move it · click to inspect
       </div>
 
       {selected && (
-        <div className="absolute right-4 top-4 flex max-h-[calc(100%-2rem)] w-80 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-xl">
+        <div className="panel-bracket absolute right-4 top-4 flex max-h-[calc(100%-2rem)] w-80 flex-col overflow-hidden rounded-[var(--radius-panel)] border border-border bg-surface shadow-xl">
           <div className="relative border-b border-border p-4">
             <button
               onClick={() => graphRef.current?.select(null)}

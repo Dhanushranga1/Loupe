@@ -6,8 +6,9 @@ import { api } from "../api";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="rounded-xl border border-border bg-surface p-5">
-      <div className="mb-3 text-[11px] uppercase tracking-wide text-text-faint">{title}</div>
+    <div className="relative overflow-hidden rounded-[var(--radius-panel)] border border-border bg-surface p-5">
+      <div className="absolute inset-x-0 top-0 h-[2px] bg-accent opacity-70" />
+      <div className="mb-3 font-mono text-[11px] uppercase tracking-wide text-text-faint">{title}</div>
       {children}
     </div>
   );

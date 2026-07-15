@@ -21,11 +21,12 @@ export function Feedback() {
         {feedback.status === "ready" && (
           <>
             {totalCount > 0 && (
-              <div className="mb-4 rounded-xl border border-border bg-surface px-5 py-4">
-                <span className="font-mono text-xl font-semibold tabular-nums">{helpfulCount}</span>
+              <div className="relative mb-4 overflow-hidden rounded-[var(--radius-panel)] border border-border bg-surface px-5 py-4">
+                <div className="absolute inset-x-0 top-0 h-[2px] bg-accent opacity-70" />
+                <span className="font-mono text-2xl font-semibold tabular-nums text-accent">{helpfulCount}</span>
                 <span className="text-text-dim"> / </span>
-                <span className="font-mono text-xl font-semibold tabular-nums text-text-dim">{totalCount}</span>
-                <span className="ml-2 text-[12px] text-text-faint">marked helpful</span>
+                <span className="font-mono text-2xl font-semibold tabular-nums text-text-dim">{totalCount}</span>
+                <span className="ml-2 font-mono text-[11px] uppercase tracking-wide text-text-faint">marked helpful</span>
               </div>
             )}
 
@@ -36,7 +37,7 @@ export function Feedback() {
                 {feedback.data.map((entry) => (
                   <div
                     key={`${entry.retrieval_log_id}-${entry.submitted_at}`}
-                    className="flex items-center gap-3 rounded-lg border border-border bg-surface px-4 py-3"
+                    className="flex items-center gap-3 rounded-[var(--radius-panel)] border border-border bg-surface px-4 py-3"
                   >
                     <span
                       className={`rounded px-2 py-0.5 text-[11px] font-medium ${

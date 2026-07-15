@@ -85,18 +85,28 @@ export function Telemetry() {
 
   return (
     <div>
-      <PageHeader title="Telemetry" subtitle="Recent MCP tool calls, straight from .loupe/logs/retrieval/." />
+      <PageHeader
+        title="Telemetry"
+        subtitle="Recent MCP tool calls, straight from .loupe/logs/retrieval/."
+        right={
+          telemetry.status === "ready" ? (
+            <div className="font-mono text-[11px] text-text-faint">
+              <span className="text-accent font-semibold tabular-nums">{telemetry.data.length}</span> calls logged
+            </div>
+          ) : undefined
+        }
+      />
       <div className="p-8">
         {telemetry.status === "loading" && <Loading label="Reading telemetry logs…" />}
         {telemetry.status === "error" && <ErrorPanel message={telemetry.error} />}
         {telemetry.status === "ready" && (
           <>
             <div className="mb-4 flex items-center gap-2">
-              <span className="text-[12px] text-text-faint">Tool:</span>
+              <span className="font-mono text-[11px] uppercase tracking-wide text-text-faint">Tool</span>
               <select
                 value={toolFilter}
                 onChange={(e) => setToolFilter(e.target.value)}
-                className="rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] outline-none"
+                className="rounded-[var(--radius-chip)] border border-border bg-surface-2 px-2 py-1 font-mono text-[12px] outline-none focus:border-accent"
               >
                 <option value="all">all ({telemetry.data.length})</option>
                 {toolNames.map((name) => (
@@ -110,7 +120,7 @@ export function Telemetry() {
             {rows.length === 0 ? (
               <Empty label="No tool calls recorded yet — connect Claude Code and make a query." />
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-border">
+              <div className="overflow-x-auto rounded-[var(--radius-panel)] border border-border">
                 <table className="w-full border-collapse text-[12px]">
                   <thead>
                     <tr className="border-b border-border bg-surface-2 text-left text-[10px] uppercase tracking-wide text-text-faint">
