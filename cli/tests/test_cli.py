@@ -1,9 +1,9 @@
-"""Tests for app/cli.py (docs/phase-4-systems.md §9)."""
+"""Tests for loupe_cli/main.py (docs/phase-4-systems.md §9)."""
 
 import shutil
 from pathlib import Path
 
-from app.cli import main
+from loupe_cli.main import main
 
 PHASE1_FIXTURES = Path(__file__).parent.parent.parent / "core" / "tests" / "fixtures" / "phase1"
 PHASE1_FILES = ["utils.py", "models.py", "services.py", "handlers.py", "circular_a.py", "circular_b.py"]

@@ -105,9 +105,11 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         # tools (addendum's explicit tool-count ceiling) — plain HTTP
         # introspection/write endpoints like /loupe/version and POST
         # /feedback must not silently become a tool just by living in the
-        # same FastAPI app. E1 adds analyze_impact (5th) and E3 adds the
-        # optional submit_feedback (6th) — both accounted for by
-        # docs/loupe-extensions.md's own running tool-budget check.
+        # same FastAPI app. E1 adds analyze_impact (5th), E3 adds the
+        # optional submit_feedback (6th), and Phase 7 adds find_code_smells
+        # (7th) — a real, deliberate crossing of the extensions doc's
+        # earlier "6 tools" running count, worth naming explicitly rather
+        # than letting the number drift unremarked.
         include_operations=[
             "list_symbols",
             "search_symbols",
@@ -115,6 +117,7 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
             "expand_dependencies",
             "analyze_impact",
             "submit_feedback",
+            "find_code_smells",
         ],
     )
     # E4 (docs/loupe-extensions.md): registered directly on the MCP SDK

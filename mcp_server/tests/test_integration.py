@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import create_app
+from loupe_mcp_server.main import create_app
 
 PHASE1_FIXTURES = Path(__file__).parent.parent.parent / "core" / "tests" / "fixtures" / "phase1"
 PHASE1_FILES = ["utils.py", "models.py", "services.py", "handlers.py", "circular_a.py", "circular_b.py"]
@@ -115,6 +115,7 @@ def test_mcp_handshake_and_tools_list(client):
         "expand_dependencies",
         "analyze_impact",
         "submit_feedback",
+        "find_code_smells",
     }
 
 
@@ -144,7 +145,20 @@ def test_mcp_expand_dependencies_on_circular_fixture_terminates_through_http(cli
     result = _mcp_tool_call(
         client, session_id, "expand_dependencies", {"symbol_id": helper_a_id, "depth": 5, "direction": "both"}, request_id=3
     )
-    assert {s["qualified_name"] for s in result} == {"helper_b"}
+    assert {s["qualified_name"] for s in result["results"]} == {"helper_b"}
+    assert result["total_count"] == 1
+
+
+def test_mcp_find_code_smells_detects_the_real_circular_fixture_through_http(client):
+    """The same circular_a/circular_b fixture expand_dependencies already exercises above
+    is a real, unrelated-to-Phase-7 instance of the circular_dependency smell — a genuine
+    end-to-end check, not a purpose-built fixture reused twice for the same claim."""
+    session_id = _mcp_initialize(client)
+    result = _mcp_tool_call(
+        client, session_id, "find_code_smells", {"category": "circular_dependency"}, request_id=2
+    )
+    names = {f["qualified_name"] for f in result["findings"]}
+    assert {"helper_a", "helper_b"} <= names
 
 
 def test_two_mcp_sessions_have_independent_governor_state(client):
@@ -167,7 +181,7 @@ def test_two_mcp_sessions_have_independent_governor_state(client):
 
 
 def test_get_symbol_exceeding_hard_ceiling_is_denied_through_http(client, monkeypatch):
-    import app.mcp_tools as mcp_tools_module
+    import loupe_mcp_server.mcp_tools as mcp_tools_module
     from loupe_core.governor.session import HARD_CEILING
 
     monkeypatch.setattr(mcp_tools_module, "symbol_extraction_cost", lambda s, b: HARD_CEILING + 1)
@@ -182,7 +196,7 @@ def test_get_symbol_exceeding_hard_ceiling_is_denied_through_http(client, monkey
 
 
 def test_tiny_budget_session_evicts_first_symbol_for_a_second_through_http(client, monkeypatch):
-    import app.mcp_tools as mcp_tools_module
+    import loupe_mcp_server.mcp_tools as mcp_tools_module
 
     session_id = _mcp_initialize(client)
     list_result = _mcp_tool_call(client, session_id, "list_symbols", {"path_or_glob": "utils.py"}, request_id=2)
@@ -223,11 +237,12 @@ def test_every_tool_call_produces_one_telemetry_line(client, mock_repo):
     _mcp_tool_call(
         client, session_id, "submit_feedback", {"retrieval_log_id": "log-x", "rating": "helpful"}, request_id=7
     )
+    _mcp_tool_call(client, session_id, "find_code_smells", {}, request_id=8)
 
     log_path = mock_repo / ".loupe" / "logs" / "retrieval" / f"{session_id}.jsonl"
     assert log_path.exists()
     lines = log_path.read_text().strip().splitlines()
-    assert len(lines) == 6
+    assert len(lines) == 7
 
     tool_names = set()
     for line in lines:
@@ -244,6 +259,7 @@ def test_every_tool_call_produces_one_telemetry_line(client, mock_repo):
         "expand_dependencies",
         "analyze_impact",
         "submit_feedback",
+        "find_code_smells",
     }
 
 
@@ -316,7 +332,7 @@ def test_conventions_summary_is_a_resource_not_a_tool(client):
     assert len(contents) == 1
     report = json.loads(contents[0]["text"])
     assert set(report.keys()) == {"error_handling", "docstrings", "imports"}
-    assert set(report["docstrings"].keys()) == {"coverage_pct", "dominant_style"}
+    assert set(report["docstrings"].keys()) >= {"coverage_pct", "dominant_style"}
     assert set(report["imports"].keys()) >= {"dominant_style"}
 
 

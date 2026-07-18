@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from app.config import DEFAULT_HARD_CEILING, DEFAULT_TOKEN_BUDGET, load_config
+from loupe_mcp_server.config import DEFAULT_HARD_CEILING, DEFAULT_TOKEN_BUDGET, load_config
 
 
 def test_missing_manifest_and_global_config_uses_documented_defaults(tmp_path):

@@ -3,6 +3,13 @@
 Thin wrappers around what already exists — `bootstrap()`, `create_app()`,
 and plain filesystem/config reads. No new logic lives here.
 
+A standalone package, deliberately (docs/PhaseX/MASTER_ROADMAP.md's restructure
+decision): `loupe_cli` depends on `loupe_mcp_server` and `loupe_core` the same
+way `loupe_mcp_server` depends on `loupe_core` — imported, not co-located —
+so the CLI's own surface (argument parsing, output formatting) stays free of
+any FastAPI/MCP-specific code, and the two packages can evolve or even ship
+independently.
+
 Simplification worth noting: §9 describes `loupe init` as "interactively"
 generating config. This implementation writes sensible, documented defaults
 non-interactively rather than prompting — nothing in phase-4-systems.md §8's
@@ -21,8 +28,8 @@ import os
 import sys
 from pathlib import Path
 
-from .bootstrap import bootstrap
-from .config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, load_config
+from loupe_mcp_server.bootstrap import bootstrap
+from loupe_mcp_server.config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, load_config
 
 DEFAULT_MANIFEST = f"""\
 # loupe.manifest.yaml
@@ -89,7 +96,7 @@ def cmd_index(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
-    from .main import create_app
+    from loupe_mcp_server.main import create_app
 
     repo_root = Path(args.path).resolve()
     app = create_app(repo_root=repo_root)

@@ -1,7 +1,7 @@
 """Tests for app/ignore.py — the shared exclude-path logic used by both the initial
 full index (bootstrap.py) and the incremental file watcher (indexer_worker.py)."""
 
-from app.ignore import is_path_ignored, load_loupeignore_patterns
+from loupe_mcp_server.ignore import is_path_ignored, load_loupeignore_patterns
 
 
 def test_default_names_excluded_at_any_depth_with_no_config():

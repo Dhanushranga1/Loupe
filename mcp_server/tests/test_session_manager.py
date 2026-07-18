@@ -1,6 +1,6 @@
 """Tests for app/session_manager.py (docs/phase-4-systems.md §8 — Session isolation)."""
 
-from app.session_manager import SessionManager
+from loupe_mcp_server.session_manager import SessionManager
 
 
 class FakeClock:

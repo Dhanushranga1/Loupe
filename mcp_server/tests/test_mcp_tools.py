@@ -12,20 +12,21 @@ import pytest
 from fastapi import HTTPException
 from sentence_transformers import SentenceTransformer
 
-from app.bootstrap import LoupeIndex
-from app.feedback import FeedbackStore
-from app.mcp_tools import (
+from loupe_mcp_server.bootstrap import LoupeIndex
+from loupe_mcp_server.feedback import FeedbackStore
+from loupe_mcp_server.mcp_tools import (
     DeniedResponse,
     GetSymbolResponse,
     analyze_impact_impl,
     expand_dependencies_impl,
+    find_code_smells_impl,
     get_symbol_impl,
     list_symbols_impl,
     sanitize_source,
     search_symbols_impl,
     submit_feedback_impl,
 )
-from app.session_manager import SessionManager
+from loupe_mcp_server.session_manager import SessionManager
 from loupe_core.governor.session import HARD_CEILING
 from loupe_core.graph.builder import build_graph, parse_file
 from loupe_core.parsing.incremental import FileIndexCache
@@ -113,6 +114,46 @@ def many_callers_index(tmp_path_factory, real_model):
     )
 
 
+PHASE7_SMELLS_FIXTURES = Path(__file__).parent.parent.parent / "core" / "tests" / "fixtures" / "phase7_smells"
+
+
+@pytest.fixture(scope="module")
+def smells_index(tmp_path_factory, real_model):
+    """Real deliberate-smell + clean fixture repo (docs/PhaseX/phase-7-fastapi-adapter-smells.md),
+    wired into a full LoupeIndex the same way test_index is, so find_code_smells_impl is
+    tested against the exact same fixture core/tests/test_smells.py verifies the underlying
+    checks against — one fixture, two layers of test."""
+    import os
+
+    repo = tmp_path_factory.mktemp("smells_repo")
+    files = sorted(p.name for p in PHASE7_SMELLS_FIXTURES.glob("*.py"))
+    for f in files:
+        shutil.copy(PHASE7_SMELLS_FIXTURES / f, repo / f)
+
+    old_cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        parsed = {f: parse_file(f) for f in files}
+    finally:
+        os.chdir(old_cwd)
+
+    graph = build_graph(list(parsed.values()))
+    all_symbols = [s for pf in parsed.values() for s in pf.symbols]
+    lexical_index = LexicalIndex(all_symbols)
+    semantic_index = SemanticIndex(model=real_model)
+    semantic_index.index(all_symbols)
+
+    return LoupeIndex(
+        repo_root=repo,
+        loupe_dir=repo / ".loupe",
+        parsed_files=parsed,
+        graph=graph,
+        lexical_index=lexical_index,
+        semantic_index=semantic_index,
+        file_cache=FileIndexCache(),
+    )
+
+
 def _by_qualified_name(index: LoupeIndex, name: str):
     return next(s for s in index.symbols if s.qualified_name == name)
 
@@ -162,16 +203,38 @@ def test_search_symbols_reproduces_phase2_top_result(test_index):
 
 def test_expand_dependencies_wraps_traversal_and_sorts_deterministically(test_index):
     create_order = _by_qualified_name(test_index, "OrderService.create_order")
-    results = expand_dependencies_impl(test_index, create_order.id, depth=1, direction="outgoing")
-    names = {r.qualified_name for r in results}
+    response = expand_dependencies_impl(test_index, create_order.id, depth=1, direction="outgoing")
+    names = {r.qualified_name for r in response.results}
     assert "Order" in names
     assert "validate_email" in names
+    assert response.total_count == len(response.results)
 
 
 def test_expand_dependencies_on_circular_fixture_terminates(test_index):
     helper_a = _by_qualified_name(test_index, "helper_a")
-    results = expand_dependencies_impl(test_index, helper_a.id, depth=5, direction="both")
-    assert {r.qualified_name for r in results} == {"helper_b"}
+    response = expand_dependencies_impl(test_index, helper_a.id, depth=5, direction="both")
+    assert {r.qualified_name for r in response.results} == {"helper_b"}
+
+
+def test_expand_dependencies_caps_large_result_sets_but_preserves_the_real_total(many_callers_index):
+    """Same real gap analyze_impact had, found on the same real high-fanout symbol via a
+    different tool: expand_dependencies(direction='incoming') on a 10-caller function used
+    to dump the full unbounded list. Now capped, with total_count preserving the real count."""
+    hub = _by_qualified_name(many_callers_index, "hub_function")
+
+    response = expand_dependencies_impl(many_callers_index, hub.id, depth=1, direction="incoming", max_results=3)
+
+    assert len(response.results) == 3
+    assert response.total_count == 10
+
+
+def test_expand_dependencies_default_cap_is_not_hit_by_a_small_result_set(many_callers_index):
+    hub = _by_qualified_name(many_callers_index, "hub_function")
+
+    response = expand_dependencies_impl(many_callers_index, hub.id, depth=1, direction="incoming")
+
+    assert len(response.results) == 10
+    assert response.total_count == 10
 
 
 # --------------------------------------------------------------------------
@@ -259,6 +322,54 @@ def test_submit_feedback_impl_writes_through_with_claude_self_report_source(tmp_
 
 
 # --------------------------------------------------------------------------
+# find_code_smells (Phase 7 — docs/PhaseX/phase-7-fastapi-adapter-smells.md)
+# --------------------------------------------------------------------------
+
+
+def test_find_code_smells_wraps_core_findings_with_no_filter(smells_index):
+    response = find_code_smells_impl(smells_index)
+
+    names_by_category = {f.category: f.qualified_name for f in response.findings}
+    assert "god_object" in names_by_category
+    assert response.total_count == len(response.findings)
+
+
+def test_find_code_smells_category_filter_returns_only_that_category(smells_index):
+    response = find_code_smells_impl(smells_index, category="blocking_call_in_async")
+
+    assert response.findings
+    assert all(f.category == "blocking_call_in_async" for f in response.findings)
+    names = {f.qualified_name for f in response.findings}
+    assert names == {"slow_handler_smelly"}
+
+
+def test_find_code_smells_caps_large_result_sets_but_preserves_the_real_total(smells_index):
+    """Real scaling gap found dogfooding this tool against Loupe's own ~1,700-symbol repo:
+    an unbounded call produced a 172K-char response. Same fix as analyze_impact/
+    expand_dependencies: cap the list, keep total_count accurate."""
+    response = find_code_smells_impl(smells_index, max_findings=3)
+
+    assert len(response.findings) == 3
+    assert response.total_count > 3
+
+
+def test_find_code_smells_default_cap_is_not_hit_by_a_small_result_set(smells_index):
+    response = find_code_smells_impl(smells_index, category="n_plus_one")
+
+    assert len(response.findings) == response.total_count == 1
+
+
+def test_find_code_smells_findings_are_real_symbol_locations(smells_index):
+    response = find_code_smells_impl(smells_index, category="n_plus_one")
+
+    assert len(response.findings) == 1
+    finding = response.findings[0]
+    assert finding.qualified_name == "get_all_with_details_smelly"
+    assert finding.file_path == "n_plus_one.py"
+    assert finding.severity == "warning"
+
+
+# --------------------------------------------------------------------------
 # get_symbol (governed)
 # --------------------------------------------------------------------------
 
@@ -287,7 +398,7 @@ def test_get_symbol_denied_when_extraction_cost_exceeds_hard_ceiling(test_index,
     session_manager = SessionManager()
     symbol = _by_qualified_name(test_index, "format_currency")
 
-    monkeypatch.setattr("app.mcp_tools.symbol_extraction_cost", lambda s, b: HARD_CEILING + 1)
+    monkeypatch.setattr("loupe_mcp_server.mcp_tools.symbol_extraction_cost", lambda s, b: HARD_CEILING + 1)
     result = get_symbol_impl(test_index, session_manager, "sess-1", symbol.id)
 
     assert isinstance(result, DeniedResponse)
@@ -305,7 +416,7 @@ def test_get_symbol_denied_when_budget_exhausted_evicts_first(test_index, monkey
     validate_email = _by_qualified_name(test_index, "validate_email")
 
     costs = {format_currency.id: 100, validate_email.id: 200}
-    monkeypatch.setattr("app.mcp_tools.symbol_extraction_cost", lambda s, b: costs[s.id])
+    monkeypatch.setattr("loupe_mcp_server.mcp_tools.symbol_extraction_cost", lambda s, b: costs[s.id])
 
     session = session_manager.get_or_create("tiny", token_budget_total=100)
     first = get_symbol_impl(test_index, session_manager, "tiny", format_currency.id)

@@ -12,12 +12,12 @@ Exposed as an MCP *Resource* (`conventions://summary`), not a Tool — see
 zero-tool-count-cost choice (a periodic whole-repo report is what MCP's
 Resource primitive is for, not a per-query lookup).
 
-Node-correlation trick: `extract_symbols`'s own module docstring (Phase 0,
-`parsing/extractor.py`) says its capture query + sort order is "public...
-reused to re-locate each Symbol's AST node" — this module re-runs that
-exact query/filter and zips the result against `ParsedFile.symbols` (built
-by the same call, same order) to get (tree-sitter node, Symbol) pairs
-without re-deriving symbol identity from scratch.
+Node-correlation trick: see `parsing/ast_utils.py`'s module docstring —
+`symbol_nodes`/`find_all`/`node_text` used here were originally defined
+privately in this module, promoted to a shared location once Phase 7's
+smell detectors needed the identical mechanism (the same "extract once a
+second consumer needs it" correction already applied elsewhere in this
+project, e.g. `looks_like_http_route`).
 """
 
 from __future__ import annotations
@@ -28,35 +28,13 @@ from dataclasses import dataclass, field
 import tree_sitter as ts
 
 from loupe_core.graph.builder import ParsedFile
-from loupe_core.parsing.extractor import DEFINITION_QUERY_SOURCE, is_nested_in_function
-from loupe_core.parsing.languages import get_language
+from loupe_core.parsing.ast_utils import find_all as _find_all
+from loupe_core.parsing.ast_utils import node_text as _node_text
+from loupe_core.parsing.ast_utils import symbol_nodes as _symbol_nodes
 from loupe_core.parsing.schema import Symbol, SymbolKind
 
 _LOGGING_METHODS = {"debug", "info", "warning", "error", "exception", "critical"}
 _FUNCTION_KINDS = {SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.ASYNC_FUNCTION}
-
-
-def _node_text(node: ts.Node, source_bytes: bytes) -> str:
-    return source_bytes[node.start_byte : node.end_byte].decode("utf-8")
-
-
-def _find_all(node: ts.Node, types: set[str]) -> list[ts.Node]:
-    found: list[ts.Node] = []
-    if node.type in types:
-        found.append(node)
-    for child in node.children:
-        found.extend(_find_all(child, types))
-    return found
-
-
-def _symbol_nodes(parsed_file: ParsedFile) -> list[tuple[ts.Node, Symbol]]:
-    """(tree-sitter node, Symbol) pairs, in the exact order/filter `extract_symbols` used."""
-    query = ts.Query(get_language("python"), DEFINITION_QUERY_SOURCE)
-    cursor = ts.QueryCursor(query)
-    captures = cursor.captures(parsed_file.tree.root_node)
-    nodes = sorted(captures.get("def", []), key=lambda n: n.start_byte)
-    nodes = [n for n in nodes if not is_nested_in_function(n)]
-    return list(zip(nodes, parsed_file.symbols))
 
 
 # --------------------------------------------------------------------------
@@ -142,6 +120,7 @@ def mine_error_handling(parsed_files: list[ParsedFile]) -> ErrorHandlingConventi
 class DocstringConvention:
     coverage_pct: float
     dominant_style: str  # "google" | "numpy" | "plain" | "none"
+    missing_symbol_ids: list[str] = field(default_factory=list)  # public symbols with no docstring at all
 
 
 def _docstring_style(docstring: str) -> str:
@@ -166,15 +145,18 @@ def mine_docstrings(parsed_files: list[ParsedFile]) -> DocstringConvention:
         return DocstringConvention(coverage_pct=0.0, dominant_style="none")
 
     documented = [s for s in public_symbols if s.docstring]
+    missing_symbol_ids = sorted(s.id for s in public_symbols if not s.docstring)
     coverage_pct = 100.0 * len(documented) / len(public_symbols)
 
     if not documented:
-        return DocstringConvention(coverage_pct=0.0, dominant_style="none")
+        return DocstringConvention(coverage_pct=0.0, dominant_style="none", missing_symbol_ids=missing_symbol_ids)
 
     style_counts = Counter(_docstring_style(s.docstring) for s in documented)
     dominant_style, _ = style_counts.most_common(1)[0]
 
-    return DocstringConvention(coverage_pct=coverage_pct, dominant_style=dominant_style)
+    return DocstringConvention(
+        coverage_pct=coverage_pct, dominant_style=dominant_style, missing_symbol_ids=missing_symbol_ids
+    )
 
 
 # --------------------------------------------------------------------------

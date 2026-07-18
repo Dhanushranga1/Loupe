@@ -1,13 +1,13 @@
-"""Tests for app/bootstrap.py (docs/phase-4-systems.md §8 — Bootstrap)."""
+"""Tests for loupe_mcp_server/bootstrap.py (docs/phase-4-systems.md §8 — Bootstrap)."""
 
 import shutil
 from pathlib import Path
 
 import pytest
 
-from app import bootstrap as bootstrap_module
-from app.bootstrap import bootstrap
-from app.config import load_config
+from loupe_mcp_server import bootstrap as bootstrap_module
+from loupe_mcp_server.bootstrap import bootstrap
+from loupe_mcp_server.config import load_config
 from loupe_core.graph.builder import EdgeType
 
 PHASE1_FIXTURES = Path(__file__).parent.parent.parent / "core" / "tests" / "fixtures" / "phase1"

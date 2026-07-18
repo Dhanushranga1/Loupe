@@ -1,13 +1,15 @@
-"""MCP tool definitions — the four Phase 4 tools plus E1's `analyze_impact`
-and E3's optional `submit_feedback`
-(docs/phase-4-systems.md §3, docs/loupe-extensions.md E1/E3).
+"""MCP tool definitions — the four Phase 4 tools plus E1's `analyze_impact`,
+E3's optional `submit_feedback`, and Phase 7's `find_code_smells`
+(docs/phase-4-systems.md §3, docs/loupe-extensions.md E1/E3,
+docs/PhaseX/phase-7-fastapi-adapter-smells.md).
 
 Governor scoping (§3, stated explicitly since it wasn't nailed down until
-this phase): `list_symbols`, `search_symbols`, `expand_dependencies`, and
-`analyze_impact` all return discovery-tier content only (signatures/ids, not
-full source) and never touch Phase 3's session residency/eviction logic —
-their cost is small enough to treat as always-affordable. Only `get_symbol`
-— the one call returning full extracted source — is governed.
+this phase): `list_symbols`, `search_symbols`, `expand_dependencies`,
+`analyze_impact`, and `find_code_smells` all return discovery-tier content
+only (signatures/ids/findings, not full source) and never touch Phase 3's
+session residency/eviction logic — their cost is small enough to treat as
+always-affordable. Only `get_symbol` — the one call returning full extracted
+source — is governed.
 
 Split into pure `*_impl` functions (testable directly against a manually
 constructed `LoupeIndex`, no HTTP needed) and thin `@router` HTTP wrappers
@@ -25,6 +27,8 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from loupe_core.adapters.fastapi.smells import ALL_CATEGORIES, Category
+from loupe_core.adapters.fastapi.smells import find_code_smells as graph_find_code_smells
 from loupe_core.governor.budget import symbol_extraction_cost
 from loupe_core.governor.knapsack import KnapsackCandidate
 from loupe_core.governor.session import HARD_CEILING, request_symbols
@@ -145,26 +149,43 @@ def search_symbols_impl(index: LoupeIndex, query: str, top_k: int = 20) -> list[
     return summaries
 
 
+DEFAULT_MAX_AFFECTED = 30  # real gap found via a real ~900-symbol repo: an ungoverned, uncapped
+# analyze_impact call on a widely-used symbol (187 direct callers) produced a 96K-char response
+# that blew past the calling tool's own output-size limit. Core's analyze_impact() still computes
+# and returns the full, untruncated result (correctness); this cap is presentation-only, applied
+# here, with the real totals preserved in *_total so truncation is visible, not silent.
+# expand_dependencies had the exact same class of gap (found immediately after the analyze_impact
+# fix, by the same real-repo caller — a high-fanout symbol's incoming edges hit 91.8K chars), so
+# it shares this constant and the same cap-with-visible-total shape.
+
+
+class ExpandDependenciesResponse(BaseModel):
+    results: list[SymbolSummary]
+    total_count: int  # real count before any max_results truncation
+
+
+def _cap_symbols_by_pagerank(symbols: list[Symbol], pagerank_scores: dict[str, float], limit: int) -> list[Symbol]:
+    return sorted(symbols, key=lambda s: (-pagerank_scores.get(s.id, 0.0), s.id))[:limit]
+
+
 def expand_dependencies_impl(
     index: LoupeIndex,
     symbol_id: str,
     depth: int = 1,
     direction: Literal["outgoing", "incoming", "both"] = "outgoing",
     edge_type: Literal["calls", "imports", "inherits", "tests"] | None = None,
-) -> list[SymbolSummary]:
+    max_results: int = DEFAULT_MAX_AFFECTED,
+) -> ExpandDependenciesResponse:
     edge_type_filter = EdgeType(edge_type) if edge_type is not None else None
     reachable_ids = graph_expand_dependencies(
         index.graph.graph, symbol_id, depth=depth, direction=direction, edge_type=edge_type_filter
     )
     symbols = [s for s in (index.symbol_by_id(sid) for sid in reachable_ids) if s is not None]
-    return [_to_summary(s) for s in _sorted_by_file_and_byte(symbols)]
-
-
-DEFAULT_MAX_AFFECTED = 30  # real gap found via a real ~900-symbol repo: an ungoverned, uncapped
-# analyze_impact call on a widely-used symbol (187 direct callers) produced a 96K-char response
-# that blew past the calling tool's own output-size limit. Core's analyze_impact() still computes
-# and returns the full, untruncated result (correctness); this cap is presentation-only, applied
-# here, with the real totals preserved in *_total so truncation is visible, not silent.
+    capped = _cap_symbols_by_pagerank(symbols, index.graph.pagerank_scores, max_results)
+    return ExpandDependenciesResponse(
+        results=[_to_summary(s) for s in capped],
+        total_count=len(symbols),
+    )
 
 
 def _capped_by_pagerank(
@@ -194,6 +215,56 @@ def analyze_impact_impl(
         transitively_affected_total=len(report.transitively_affected),
         high_centrality_warnings=[_to_summary(symbols_by_id[sid]) for sid in report.high_centrality_warnings],
         affected_route_count=report.affected_route_count,
+    )
+
+
+class SmellFindingResponse(BaseModel):
+    category: Category
+    symbol_id: str
+    qualified_name: str
+    file_path: str
+    message: str
+    severity: Literal["info", "warning", "high"]
+
+
+class FindCodeSmellsResponse(BaseModel):
+    findings: list[SmellFindingResponse]
+    total_count: int  # real count before any max_findings truncation
+
+
+_SEVERITY_RANK = {"high": 0, "warning": 1, "info": 2}
+
+
+def find_code_smells_impl(
+    index: LoupeIndex, category: Category | None = None, max_findings: int = DEFAULT_MAX_AFFECTED
+) -> FindCodeSmellsResponse:
+    # Real gap found dogfooding this tool against Loupe's own repo: an
+    # unbounded, uncapped call produced a 172K-char response (513 findings,
+    # mostly convention_violation on a real ~1,700-symbol index) — the exact
+    # same output-size class of bug analyze_impact/expand_dependencies had.
+    # Same fix: core still computes the full, correct, untruncated list;
+    # capping (sorted highest-severity first, so nothing important is lost
+    # to truncation) is a presentation-only concern applied here, with the
+    # real total preserved so truncation is visible, not silent.
+    parsed_files = list(index.parsed_files.values())
+    findings = graph_find_code_smells(
+        parsed_files, index.graph.graph, index.graph.unresolved, index.graph.pagerank_scores, category=category
+    )
+    ranked = sorted(findings, key=lambda f: (_SEVERITY_RANK[f.severity], f.qualified_name))
+    capped = ranked[:max_findings]
+    return FindCodeSmellsResponse(
+        findings=[
+            SmellFindingResponse(
+                category=f.category,
+                symbol_id=f.symbol_id,
+                qualified_name=f.qualified_name,
+                file_path=f.file_path,
+                message=f.message,
+                severity=f.severity,
+            )
+            for f in capped
+        ],
+        total_count=len(findings),
     )
 
 
@@ -287,9 +358,12 @@ async def expand_dependencies_route(
     depth: int = 1,
     direction: Literal["outgoing", "incoming", "both"] = "outgoing",
     edge_type: Literal["calls", "imports", "inherits", "tests"] | None = None,
-) -> list[SymbolSummary]:
+    max_results: int = DEFAULT_MAX_AFFECTED,
+) -> ExpandDependenciesResponse:
     index: LoupeIndex = request.app.state.index
-    return expand_dependencies_impl(index, symbol_id, depth=depth, direction=direction, edge_type=edge_type)
+    return expand_dependencies_impl(
+        index, symbol_id, depth=depth, direction=direction, edge_type=edge_type, max_results=max_results
+    )
 
 
 @router.get("/analyze_impact", operation_id="analyze_impact")
@@ -308,3 +382,12 @@ async def submit_feedback_route(
 ) -> SubmitFeedbackResponse:
     feedback_store: FeedbackStore = request.app.state.feedback_store
     return submit_feedback_impl(feedback_store, retrieval_log_id, rating, note=note)
+
+
+@router.get("/find_code_smells", operation_id="find_code_smells")
+@log_tool_call("find_code_smells")
+async def find_code_smells_route(
+    request: Request, category: Category | None = None, max_findings: int = DEFAULT_MAX_AFFECTED
+) -> FindCodeSmellsResponse:
+    index: LoupeIndex = request.app.state.index
+    return find_code_smells_impl(index, category=category, max_findings=max_findings)

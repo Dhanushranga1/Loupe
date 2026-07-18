@@ -16,35 +16,27 @@ always flag *something* regardless of whether the graph actually has an
 outlier; a stdev-based cutoff only fires when a symbol's centrality is
 genuinely unusual relative to the rest of that specific repo's graph.
 
-Route counting: no "FastAPI adapter" or `route` symbol kind exists anywhere
-in this repo (E1's original scope note), and building one is real, separate
-work. But Phase 0 already extracts each symbol's decorator text verbatim
-(`Symbol.decorators`) regardless of framework — so "is this an HTTP route
-handler" doesn't need a whole adapter, just a decorator-shape check:
-`<name>.<http_method>(...)`, e.g. `router.get("/search")` or
-`app.post("/orders")`. This is an honest heuristic (a decorator matching
-that shape almost certainly is a route in FastAPI/Flask-style code; nothing
-here confirms the base is really an `APIRouter` instance — that would be
-real type inference, deliberately out of scope everywhere else in this
-project too), not full framework awareness — real, found via a real
-~900-symbol FastAPI codebase where this previously silently reported 0
-routes affected out of 187 real route-handler callers.
+Route counting: no `route` symbol kind exists anywhere in this repo (E1's
+original scope note), so this reuses `adapters.fastapi.routes.looks_like_http_route`
+— a decorator-shape heuristic (`<name>.<http_method>(...)`), not full
+framework awareness. Originally lived here as a private helper; promoted to
+a shared module once Phase 7's `find_code_smells` needed the identical
+"is this a route handler" answer — found via a real ~900-symbol FastAPI
+codebase where this previously silently reported 0 routes affected out of
+187 real route-handler callers.
 """
 
 from __future__ import annotations
 
-import re
 import statistics
 from dataclasses import dataclass, field
 
 import networkx as nx
 
+from loupe_core.adapters.fastapi.routes import looks_like_http_route
 from loupe_core.parsing.schema import Symbol, SymbolKind
 
 from .traversal import expand_dependencies
-
-_HTTP_METHODS = {"get", "post", "put", "delete", "patch", "options", "head"}
-_ROUTE_DECORATOR_PATTERN = re.compile(r"^\w+\.(" + "|".join(_HTTP_METHODS) + r")\(")
 
 
 @dataclass
@@ -70,12 +62,6 @@ def hub_threshold(pagerank_scores: dict[str, float]) -> float:
     if len(scores) < 2:
         return float("inf")  # can't call anything an "outlier" relative to itself/nothing
     return statistics.mean(scores) + statistics.pstdev(scores)
-
-
-def _looks_like_http_route(symbol: Symbol) -> bool:
-    """True if any of `symbol`'s decorators is shaped like `<name>.<http_method>(...)` —
-    see module docstring for exactly what this does and doesn't claim to detect."""
-    return any(_ROUTE_DECORATOR_PATTERN.match(d) for d in symbol.decorators)
 
 
 def _summaries(symbol_ids: set[str], symbols_by_id: dict[str, Symbol]) -> list[SymbolSummary]:
@@ -107,7 +93,7 @@ def analyze_impact(
     )
 
     affected_route_count = sum(
-        1 for sid in (direct_ids | transitive_ids) if (s := symbols_by_id.get(sid)) is not None and _looks_like_http_route(s)
+        1 for sid in (direct_ids | transitive_ids) if (s := symbols_by_id.get(sid)) is not None and looks_like_http_route(s)
     )
 
     return ImpactReport(

@@ -1,6 +1,6 @@
 """Tests for app/feedback.py's FeedbackStore (docs/loupe-extensions.md E3)."""
 
-from app.feedback import FeedbackStore
+from loupe_mcp_server.feedback import FeedbackStore
 
 
 def test_submit_writes_a_correctly_linked_entry(tmp_path):
