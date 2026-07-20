@@ -48,7 +48,12 @@ class TestLink:
     confidence: TestConfidence
 
 
-def _is_test_file(file_path: str) -> bool:
+def is_test_file(file_path: str) -> bool:
+    """Public (not module-private): the zero-cost static analysis pack's E6
+    dead-code check (docs/PhaseX/zero-cost-static-analysis-pack.md) reuses
+    this exact test-file heuristic as one of its exclusion criteria — a
+    second real consumer, not just this module's own test-symbol filter.
+    """
     filename = file_path.rsplit("/", 1)[-1]
     return filename.startswith("test_") or filename.endswith("_test.py")
 
@@ -76,7 +81,7 @@ def link_tests(graph: nx.DiGraph, symbols_by_id: dict[str, Symbol]) -> list[Test
         by_name.setdefault(s.name.casefold(), []).append(sid)
 
     test_symbols = sorted(
-        (s for s in symbols_by_id.values() if _is_test_file(s.file_path)),
+        (s for s in symbols_by_id.values() if is_test_file(s.file_path)),
         key=lambda s: (s.file_path, s.byte_start),
     )
 

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from loupe_core.graph.builder import build_graph, parse_file
+from loupe_core.graph.centrality import compute_personalized_pagerank
 from loupe_core.retrieval.fusion import CANDIDATE_POOL_SIZE, FINAL_TOP_K, fuse
 from loupe_core.retrieval.lexical import LexicalIndex
 from loupe_core.retrieval.semantic import SemanticIndex
@@ -42,14 +43,16 @@ def main(argv: list[str]) -> int:
 
     lexical_results = lexical_index.query(query, top_k=CANDIDATE_POOL_SIZE)
     semantic_results = semantic_index.query(query, top_k=CANDIDATE_POOL_SIZE)
-    fused = fuse(lexical_results, semantic_results, loupe_graph.pagerank_scores, top_k=FINAL_TOP_K)
+    fused = fuse(lexical_results, semantic_results, loupe_graph.pagerank_scores, graph=loupe_graph.graph, top_k=FINAL_TOP_K)
 
     lexical_rank = {sid: i + 1 for i, (sid, _) in enumerate(lexical_results)}
     semantic_rank = {sid: i + 1 for i, (sid, _) in enumerate(semantic_results)}
-    pagerank_by_id = loupe_graph.pagerank_scores
+    candidate_ids = set(lexical_rank) | set(semantic_rank)
+    # Personalized, not static — matches what `fuse(..., graph=...)` actually ranked by.
+    personalized_pagerank = compute_personalized_pagerank(loupe_graph.graph, candidate_ids, loupe_graph.pagerank_scores)
 
     print(f"\nQuery: {query!r}\n")
-    header = f"{'#':<3} {'symbol':<50} {'fused':>8} {'lex_rank':>9} {'sem_rank':>9} {'pagerank':>10}"
+    header = f"{'#':<3} {'symbol':<50} {'fused':>8} {'lex_rank':>9} {'sem_rank':>9} {'p_pagerank':>10}"
     print(header)
     print("-" * len(header))
     for rank, (symbol_id, fused_score) in enumerate(fused, 1):
@@ -57,7 +60,7 @@ def main(argv: list[str]) -> int:
         label = f"{symbol.file_path}::{symbol.qualified_name}"
         lr = lexical_rank.get(symbol_id, "-")
         sr = semantic_rank.get(symbol_id, "-")
-        pr = pagerank_by_id.get(symbol_id, 0.0)
+        pr = personalized_pagerank.get(symbol_id, 0.0)
         print(f"{rank:<3} {label:<50} {fused_score:>8.4f} {str(lr):>9} {str(sr):>9} {pr:>10.4f}")
 
     if not fused:

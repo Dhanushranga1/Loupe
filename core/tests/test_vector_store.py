@@ -67,3 +67,32 @@ def test_sync_removes_symbols_not_in_current_set():
 def test_empty_store_returns_no_results():
     store = VectorStore(dim=4)
     assert store.query([1.0, 0.0, 0.0, 0.0], top_k=5) == []
+
+
+def test_store_created_in_one_thread_is_queryable_from_another():
+    """A real bug found dogfooding a live `loupe serve` process, not in any
+    test: mcp_server's IndexerWorker rebuilds the index (and this VectorStore)
+    inside `asyncio.to_thread`, a threadpool thread distinct from whichever
+    thread later serves a request against the swapped-in index — the exact
+    "SQLite objects created in a thread can only be used in that same
+    thread" error, reproduced directly here without needing a live server.
+    """
+    import queue
+    import threading
+
+    store_queue: queue.Queue[VectorStore] = queue.Queue()
+
+    def _build_store() -> None:
+        store = VectorStore(dim=4)
+        store.upsert(ID_A, [1.0, 0.0, 0.0, 0.0])
+        store_queue.put(store)
+
+    builder_thread = threading.Thread(target=_build_store)
+    builder_thread.start()
+    builder_thread.join()
+
+    store = store_queue.get()
+    # Queried from *this* (the test's own) thread — a different thread than
+    # the one that constructed it.
+    results = dict(store.query([1.0, 0.0, 0.0, 0.0], top_k=1))
+    assert math.isclose(results[ID_A], 1.0, abs_tol=1e-6)

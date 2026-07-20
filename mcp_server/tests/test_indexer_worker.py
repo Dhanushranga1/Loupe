@@ -67,3 +67,38 @@ def test_two_rapid_writes_within_debounce_window_trigger_exactly_one_reparse(rep
         time.sleep(SETTLE_WAIT_SECONDS)
 
         assert worker.reparse_count == 1, "two writes inside one debounce window must settle into a single re-parse"
+
+
+def test_semantic_search_works_after_a_real_incremental_reindex(repo):
+    """A real bug found dogfooding a live `loupe serve` process, not caught by
+    any test before this one: `update_index` runs inside `asyncio.to_thread`
+    (a threadpool thread) and rebuilds `SemanticIndex`'s sqlite connections
+    there; a later `/search_symbols` request is handled on the main event
+    loop thread — a different thread — and sqlite3's default same-thread
+    check raised "SQLite objects created in a thread can only be used in
+    that same thread" the moment a live server actually went through this
+    exact sequence. Fixed with `check_same_thread=False` on both
+    `VectorStore` and `EmbeddingCache` (see their own module comments); this
+    test exercises the real end-to-end path the bug actually manifested at,
+    not just the lower-level connection behavior test_vector_store.py and
+    test_semantic.py also cover in isolation.
+    """
+    app = create_app(repo_root=repo)
+    with TestClient(app) as client:
+        # A real incremental reindex, exactly like the other tests in this
+        # file — runs update_index inside asyncio.to_thread on a threadpool
+        # thread, swapping in a freshly-built SemanticIndex.
+        (repo / "utils.py").write_text(
+            "def format_currency(amount: float) -> str:\n"
+            '    """Format a numeric amount as a display-ready currency string."""\n'
+            "    return f'${amount:.2f}'\n"
+        )
+        time.sleep(SETTLE_WAIT_SECONDS)
+
+        # Handled on the main event loop thread — a different thread than
+        # whichever threadpool worker built the index above.
+        response = client.get("/search_symbols", params={"query": "format currency", "top_k": 3})
+
+        assert response.status_code == 200
+        names = {s["qualified_name"] for s in response.json()}
+        assert "format_currency" in names

@@ -43,8 +43,19 @@ def test_project_manifest_wins_over_global_config(tmp_path):
 def test_a_project_with_only_languages_set_inherits_everything_else(tmp_path):
     (tmp_path / "loupe.manifest.yaml").write_text("languages: [python]\n")
     cfg = load_config(tmp_path, global_config_path=tmp_path / "nonexistent-global.yaml")
-    assert cfg.embedding_model == "bge-small-en-v1.5"
+    assert cfg.embedding_model == "auto"  # compute-profiles.md: resolved from compute_profile, not a fixed name
+    assert cfg.compute_profile == "cpu_small"
     assert cfg.token_budget.default_per_turn == DEFAULT_TOKEN_BUDGET
+
+
+def test_compute_profile_and_explicit_overrides_are_parsed(tmp_path):
+    (tmp_path / "loupe.manifest.yaml").write_text(
+        "compute_profile: gpu_large\nembedding_model: some-custom-model\ncross_encoder_model: auto\n"
+    )
+    cfg = load_config(tmp_path, global_config_path=tmp_path / "nonexistent-global.yaml")
+    assert cfg.compute_profile == "gpu_large"
+    assert cfg.embedding_model == "some-custom-model"
+    assert cfg.cross_encoder_model == "auto"
 
 
 def test_manifest_exclude_paths_and_packages(tmp_path):

@@ -21,6 +21,7 @@ from loupe_core.governor.budget import symbol_extraction_cost
 from loupe_core.governor.knapsack import KnapsackCandidate, knapsack_greedy
 from loupe_core.governor.session import DEFAULT_BUDGET
 from loupe_core.graph.builder import LoupeGraph, ParsedFile, build_graph
+from loupe_core.graph.centrality import compute_personalized_pagerank
 from loupe_core.parsing.schema import Symbol
 from loupe_core.retrieval.fusion import CANDIDATE_POOL_SIZE, FINAL_TOP_K, fuse
 from loupe_core.retrieval.lexical import LexicalIndex
@@ -227,13 +228,39 @@ def strategy_c_loupe_oracle(snapshot: RepoSnapshot, ground_truth_symbol_ids: lis
 
 
 def strategy_c_loupe_end_to_end(
-    snapshot: RepoSnapshot, task_description: str, token_budget: int = DEFAULT_BUDGET
+    snapshot: RepoSnapshot,
+    task_description: str,
+    token_budget: int = DEFAULT_BUDGET,
+    use_personalized_pagerank: bool = True,
+    repo: git.Repo | None = None,
+    use_churn: bool = False,
 ) -> StrategyResult:
+    """`use_personalized_pagerank` defaults to True — retrieval-upgrades §1's real,
+    intended pipeline — but stays a parameter (not hardcoded) so
+    `run_personalized_pagerank_ablation` below can call this same strategy function
+    both ways rather than maintaining a second, parallel implementation.
+
+    `use_churn`/`repo` (Phase 14 §2's own ablation, same pattern): `repo` is
+    needed because `RepoSnapshot` itself carries no live `git.Repo` handle,
+    only file content as of one commit. Churn is computed with
+    `now=<this snapshot's own commit time>`, not real current time — using
+    real "now" would leak information about commits *after* the benchmark
+    task's cutoff into a historical evaluation, silently inflating recall.
+    """
+    churn_scores = None
+    if use_churn and repo is not None:
+        from loupe_core.retrieval.churn import compute_churn_scores
+
+        commit = repo.commit(snapshot.commit_sha)
+        churn_scores = compute_churn_scores(repo, snapshot.symbols, now=commit.committed_date)
+
     fused = fuse(
         snapshot.lexical_index.query(task_description, top_k=CANDIDATE_POOL_SIZE),
         snapshot.semantic_index.query(task_description, top_k=CANDIDATE_POOL_SIZE),
         snapshot.graph.pagerank_scores,
+        graph=snapshot.graph.graph if use_personalized_pagerank else None,
         top_k=FINAL_TOP_K,
+        churn_scores=churn_scores,
     )
     symbols_by_id = {s.id: s for s in snapshot.symbols}
 
@@ -330,6 +357,86 @@ def run_end_to_end_condition(repo: git.Repo, tasks: list[BenchmarkTask], embeddi
 
 
 # --------------------------------------------------------------------------
+# Personalized PageRank ablation (docs/PhaseX/loupe-retrieval-upgrades.md §2,
+# acceptance criterion 1: "reusing Phase 5's harness directly, compare
+# recall@k with static vs. personalized PageRank as RRF's centrality term").
+# Reuses `strategy_c_loupe_end_to_end` both ways via its own
+# `use_personalized_pagerank` flag rather than a second strategy function.
+# --------------------------------------------------------------------------
+
+
+def run_personalized_pagerank_ablation(repo: git.Repo, tasks: list[BenchmarkTask], embedding_model: object | None = None) -> dict:
+    """Same end-to-end condition as `run_end_to_end_condition`, but comparing Loupe
+    against itself with static vs. personalized PageRank as RRF's centrality term —
+    isolates the one variable this ablation exists to answer, everything else
+    (lexical/semantic candidates, knapsack budget) held identical per task.
+    """
+    results: dict[str, dict[str, list]] = {
+        "static_pagerank": {"recall_5": [], "recall_10": [], "tokens": []},
+        "personalized_pagerank": {"recall_5": [], "recall_10": [], "tokens": []},
+    }
+
+    for task in tasks:
+        snapshot = build_repo_snapshot(repo, task.commit_sha + "^", embedding_model=embedding_model)
+        ground_truth = set(task.ground_truth_symbol_ids)
+
+        static = strategy_c_loupe_end_to_end(snapshot, task.task_description, use_personalized_pagerank=False)
+        personalized = strategy_c_loupe_end_to_end(snapshot, task.task_description, use_personalized_pagerank=True)
+
+        for name, result in (("static_pagerank", static), ("personalized_pagerank", personalized)):
+            results[name]["recall_5"].append(recall_at_k(result.retrieved_symbol_ids, ground_truth, k=5))
+            results[name]["recall_10"].append(recall_at_k(result.retrieved_symbol_ids, ground_truth, k=10))
+            results[name]["tokens"].append(token_cost(result.retrieved_content))
+
+    return {
+        name: {
+            "recall_5": _aggregate(data["recall_5"]),
+            "recall_10": _aggregate(data["recall_10"]),
+            "tokens": _aggregate(data["tokens"]),
+        }
+        for name, data in results.items()
+    }
+
+
+# --------------------------------------------------------------------------
+# Churn ablation (docs/PhaseX/phase-14-adaptive-context-compression.md §2's
+# own acceptance criterion: "reusing Phase 5's harness exactly as
+# personalized PageRank's was, run the benchmark with and without churn as
+# an RRF signal, compare recall@k"). Reuses `strategy_c_loupe_end_to_end`
+# both ways via its own `use_churn` flag, the same pattern as
+# `run_personalized_pagerank_ablation` above.
+# --------------------------------------------------------------------------
+
+
+def run_churn_ablation(repo: git.Repo, tasks: list[BenchmarkTask], embedding_model: object | None = None) -> dict:
+    results: dict[str, dict[str, list]] = {
+        "without_churn": {"recall_5": [], "recall_10": [], "tokens": []},
+        "with_churn": {"recall_5": [], "recall_10": [], "tokens": []},
+    }
+
+    for task in tasks:
+        snapshot = build_repo_snapshot(repo, task.commit_sha + "^", embedding_model=embedding_model)
+        ground_truth = set(task.ground_truth_symbol_ids)
+
+        without_churn = strategy_c_loupe_end_to_end(snapshot, task.task_description, repo=repo, use_churn=False)
+        with_churn = strategy_c_loupe_end_to_end(snapshot, task.task_description, repo=repo, use_churn=True)
+
+        for name, result in (("without_churn", without_churn), ("with_churn", with_churn)):
+            results[name]["recall_5"].append(recall_at_k(result.retrieved_symbol_ids, ground_truth, k=5))
+            results[name]["recall_10"].append(recall_at_k(result.retrieved_symbol_ids, ground_truth, k=10))
+            results[name]["tokens"].append(token_cost(result.retrieved_content))
+
+    return {
+        name: {
+            "recall_5": _aggregate(data["recall_5"]),
+            "recall_10": _aggregate(data["recall_10"]),
+            "tokens": _aggregate(data["tokens"]),
+        }
+        for name, data in results.items()
+    }
+
+
+# --------------------------------------------------------------------------
 # Top-level harness runner
 # --------------------------------------------------------------------------
 
@@ -391,7 +498,9 @@ def strategy_c_loupe_learned_ranker(
     """
     lexical_results = snapshot.lexical_index.query(task_description, top_k=CANDIDATE_POOL_SIZE)
     semantic_results = snapshot.semantic_index.query(task_description, top_k=CANDIDATE_POOL_SIZE)
-    fused = fuse(lexical_results, semantic_results, snapshot.graph.pagerank_scores, top_k=FINAL_TOP_K)
+    fused = fuse(
+        lexical_results, semantic_results, snapshot.graph.pagerank_scores, graph=snapshot.graph.graph, top_k=FINAL_TOP_K
+    )
 
     if not ranker.is_trained:
         ranked = fused
@@ -399,7 +508,13 @@ def strategy_c_loupe_learned_ranker(
         lexical_rank = {sid: i + 1 for i, (sid, _) in enumerate(lexical_results)}
         semantic_rank = {sid: i + 1 for i, (sid, _) in enumerate(semantic_results)}
         candidate_ids = {sid for sid, _ in fused}
-        centrality_sorted = sorted(candidate_ids, key=lambda sid: (-snapshot.graph.pagerank_scores.get(sid, 0.0), sid))
+        # Mirrors fuse()'s own centrality term exactly (personalized, seeded from this
+        # same candidate pool) — the ranker's features must match what fuse() actually
+        # ranked by, not a stale static score fuse() itself no longer defaults to.
+        personalized_pagerank = compute_personalized_pagerank(
+            snapshot.graph.graph, candidate_ids, snapshot.graph.pagerank_scores
+        )
+        centrality_sorted = sorted(candidate_ids, key=lambda sid: (-personalized_pagerank.get(sid, 0.0), sid))
         centrality_rank = {sid: i + 1 for i, sid in enumerate(centrality_sorted)}
 
         def _signal(rank_map: dict[str, int], sid: str) -> float:

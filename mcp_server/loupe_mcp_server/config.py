@@ -15,6 +15,8 @@ from typing import Any
 
 import yaml
 
+from .compute_profiles import AUTO, DEFAULT_COMPUTE_PROFILE
+
 # Two distinct version numbers, deliberately not conflated (addendum item c):
 # INDEX_SCHEMA_VERSION governs .loupe/'s on-disk format (bump -> full reindex).
 # MCP_TOOL_SCHEMA_VERSION governs the four tools' input/output contracts
@@ -24,9 +26,18 @@ MCP_TOOL_SCHEMA_VERSION = 1
 
 DEFAULT_TOKEN_BUDGET = 6000
 DEFAULT_HARD_CEILING = 20000
-DEFAULT_EMBEDDING_MODEL = "bge-small-en-v1.5"
 DEFAULT_PORT = 8765
 DEFAULT_SYMBOL_KINDS = ["function", "class", "method"]
+
+# Compute profiles (docs/PhaseX/compute-profiles.md): `embedding_model`/
+# `cross_encoder_model` default to AUTO ("auto") — resolved from
+# `compute_profile` via compute_profiles.py's resolve_*, not a fixed model
+# name here anymore. Was `DEFAULT_EMBEDDING_MODEL = "bge-small-en-v1.5"` (a
+# real model name); checked before removing that this field was never
+# actually read anywhere in production code to instantiate a model —
+# `retrieval/semantic.py`'s own `EMBEDDING_MODEL_NAME` constant was the only
+# thing production code consulted, making this config field dead plumbing
+# until now.
 
 GLOBAL_CONFIG_PATH = Path.home() / ".config" / "loupe" / "global.yaml"
 
@@ -48,7 +59,9 @@ class LoupeConfig:
     repo_root: Path
     languages: list[str] = field(default_factory=lambda: ["python"])
     token_budget: TokenBudgetConfig = field(default_factory=TokenBudgetConfig)
-    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    compute_profile: str = DEFAULT_COMPUTE_PROFILE
+    embedding_model: str = AUTO
+    cross_encoder_model: str = AUTO
     index: IndexConfig = field(default_factory=IndexConfig)
     packages: list[dict[str, str]] = field(default_factory=list)
 
@@ -85,7 +98,9 @@ def load_config(repo_root: Path, global_config_path: Path = GLOBAL_CONFIG_PATH) 
             default_per_turn=token_budget_data.get("default_per_turn", DEFAULT_TOKEN_BUDGET),
             hard_ceiling=token_budget_data.get("hard_ceiling", DEFAULT_HARD_CEILING),
         ),
-        embedding_model=merged.get("embedding_model", DEFAULT_EMBEDDING_MODEL),
+        compute_profile=merged.get("compute_profile", DEFAULT_COMPUTE_PROFILE),
+        embedding_model=merged.get("embedding_model", AUTO),
+        cross_encoder_model=merged.get("cross_encoder_model", AUTO),
         index=IndexConfig(
             symbol_kinds=index_data.get("symbol_kinds", list(DEFAULT_SYMBOL_KINDS)),
             exclude_paths=index_data.get("exclude_paths", []),

@@ -87,6 +87,24 @@ def test_removing_a_symbol_deletes_its_cache_row(tmp_path, real_model):
     assert index.is_cached(g_id)
 
 
+def test_get_embedding_returns_the_cached_vector_for_an_indexed_symbol_none_otherwise(tmp_path, real_model):
+    """Phase 9's MMR selection (retrieval-upgrades §4) needs raw embedding vectors
+    directly, not just KNN query hits — the real second consumer `get_embedding`
+    was added for."""
+    f = tmp_path / "a.py"
+    f.write_text("def f():\n    return 1\n\n\ndef g():\n    return 2\n")
+    pf = parse_file(str(f))
+    f_id = next(s.id for s in pf.symbols if s.qualified_name == "f")
+
+    index = SemanticIndex(model=real_model)
+    assert index.get_embedding(f_id) is None, "never-indexed symbol has no cached embedding"
+
+    index.index(pf.symbols)
+    embedding = index.get_embedding(f_id)
+    assert embedding is not None
+    assert len(embedding) == 384
+
+
 def test_batched_not_one_by_one(tmp_path, real_model):
     f = tmp_path / "a.py"
     f.write_text("def a():\n    return 1\n\n\ndef b():\n    return 2\n\n\ndef c():\n    return 3\n")
@@ -98,6 +116,42 @@ def test_batched_not_one_by_one(tmp_path, real_model):
 
     assert spy.encode_call_count == 1, "all new symbols must be embedded in one batched call"
     assert spy.total_texts_encoded == 3
+
+
+def test_embedding_cache_created_in_one_thread_is_usable_from_another(tmp_path, real_model):
+    """A real bug found dogfooding a live `loupe serve` process, not in any
+    test: mcp_server's IndexerWorker rebuilds the index (and this cache)
+    inside `asyncio.to_thread`, a threadpool thread distinct from whichever
+    thread later serves a request against the swapped-in index — see
+    test_vector_store.py's identical test for the full incident writeup.
+    """
+    import queue
+    import threading
+
+    from loupe_core.retrieval.semantic import EmbeddingCache
+
+    f = tmp_path / "a.py"
+    f.write_text("def f():\n    return 1\n")
+    pf = parse_file(str(f))
+    symbol = pf.symbols[0]
+
+    cache_queue: queue.Queue[EmbeddingCache] = queue.Queue()
+
+    def _build_cache() -> None:
+        cache = EmbeddingCache()
+        cache.put(symbol.id, symbol.content_hash, [0.1, 0.2, 0.3])
+        cache_queue.put(cache)
+
+    builder_thread = threading.Thread(target=_build_cache)
+    builder_thread.start()
+    builder_thread.join()
+
+    cache = cache_queue.get()
+    # Read from *this* (the test's own) thread — a different thread than the
+    # one that constructed it.
+    content_hash, embedding = cache.get(symbol.id)
+    assert content_hash == symbol.content_hash
+    assert embedding == pytest.approx([0.1, 0.2, 0.3], abs=1e-6)  # packed/unpacked as float32, not exact
 
 
 def test_semantic_query_finds_paraphrased_match(real_model):

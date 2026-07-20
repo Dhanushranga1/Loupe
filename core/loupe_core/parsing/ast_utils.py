@@ -14,6 +14,8 @@ without re-deriving symbol identity from scratch.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import tree_sitter as ts
 
 from loupe_core.graph.builder import ParsedFile
@@ -43,3 +45,50 @@ def symbol_nodes(parsed_file: ParsedFile) -> list[tuple[ts.Node, Symbol]]:
     nodes = sorted(captures.get("def", []), key=lambda n: n.start_byte)
     nodes = [n for n in nodes if not is_nested_in_function(n)]
     return list(zip(nodes, parsed_file.symbols))
+
+
+@dataclass(frozen=True)
+class ClassFieldInfo:
+    name: str
+    type_text: str
+    has_default: bool
+
+
+def class_field_annotations(class_node: ts.Node, source_bytes: bytes) -> list[ClassFieldInfo]:
+    """Top-level annotated assignments in a class body (`name: Type` or
+    `name: Type = default`) — the field shape shared by Pydantic
+    `BaseModel`/`BaseSettings`, SQLAlchemy declarative models (type-annotated
+    `mapped_column`-style fields), and plain dataclasses. Reused by the
+    zero-cost static analysis pack's E7 (config/env-var drift), E8
+    (migration drift), and E9 (API contract diffing) — three real consumers
+    needing the identical "what fields does this class declare, and does
+    each have a default" extraction, not duplicated three times over.
+    Non-annotated assignments (`x = 5`, no type) are deliberately not
+    fields here — Settings/model/response-model classes always
+    type-annotate their real fields; an untyped class attribute is
+    something else (a class-level constant, a private cache slot).
+    """
+    body = class_node.child_by_field_name("body")
+    if body is None:
+        return []
+
+    fields: list[ClassFieldInfo] = []
+    for stmt in body.children:
+        if stmt.type != "expression_statement" or not stmt.children:
+            continue
+        assignment = stmt.children[0]
+        if assignment.type != "assignment":
+            continue
+        left = assignment.child_by_field_name("left")
+        type_node = assignment.child_by_field_name("type")
+        right = assignment.child_by_field_name("right")
+        if left is None or type_node is None or left.type != "identifier":
+            continue
+        fields.append(
+            ClassFieldInfo(
+                name=node_text(left, source_bytes),
+                type_text=node_text(type_node, source_bytes),
+                has_default=right is not None,
+            )
+        )
+    return fields

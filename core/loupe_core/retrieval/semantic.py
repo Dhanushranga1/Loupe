@@ -21,15 +21,21 @@ EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 EMBEDDING_DIM = 384
 BATCH_SIZE = 64
 
-_model: SentenceTransformer | None = None
+_models: dict[str, SentenceTransformer] = {}
 
 
-def get_default_model() -> SentenceTransformer:
-    """Lazily load the real model once per process — it's ~130MB, not something to reload per call."""
-    global _model
-    if _model is None:
-        _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    return _model
+def get_default_model(model_name: str = EMBEDDING_MODEL_NAME) -> SentenceTransformer:
+    """Lazily load and cache a model by name — once per process *per distinct
+    name*, not a single global slot. Compute profiles
+    (docs/PhaseX/compute-profiles.md) mean more than one legitimate model
+    name can be requested within one process (e.g. `bootstrap()` resolving
+    whichever model the active `compute_profile` names); every zero-arg
+    caller elsewhere in this codebase is unaffected — same name, same
+    cached instance, same behavior as before this became name-keyed.
+    """
+    if model_name not in _models:
+        _models[model_name] = SentenceTransformer(model_name)
+    return _models[model_name]
 
 
 def embed_text_for_symbol(symbol: Symbol) -> str:
@@ -52,7 +58,11 @@ class EmbeddingCache:
     """`embedding_cache(symbol_id TEXT PRIMARY KEY, content_hash TEXT, embedding BLOB)` (§5)."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._conn = sqlite3.connect(db_path)
+        # check_same_thread=False: same real, live-found bug as
+        # storage/vector_store.py's VectorStore — see that file's comment on
+        # its own identical fix for the full explanation. This cache is
+        # rebuilt on the same asyncio.to_thread reindex path.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS embedding_cache ("
             "symbol_id TEXT PRIMARY KEY, content_hash TEXT, embedding BLOB)"
@@ -132,6 +142,27 @@ class SemanticIndex:
         embedding = self._encode([query_text])[0]
         return self._store.query(embedding, top_k=top_k)
 
+    def query_by_vector(self, embedding: list[float], top_k: int = 50) -> list[tuple[str, float]]:
+        """Same KNN search as `query`, but against an already-computed
+        embedding — no re-encoding call. The zero-cost static analysis
+        pack's E5 duplicate-code check (docs/PhaseX/zero-cost-static-analysis-pack.md)
+        needs this: an all-pairs similarity scan queries each symbol's own
+        cached embedding (`get_embedding`) against every other symbol's,
+        which has no query *text* to encode at all.
+        """
+        return self._store.query(embedding, top_k=top_k)
+
     def is_cached(self, symbol_id: str) -> bool:
         """Whether `symbol_id` currently has an embedding_cache row (for test/inspection use)."""
         return self._cache.get(symbol_id) is not None
+
+    def get_embedding(self, symbol_id: str) -> list[float] | None:
+        """The raw cached embedding vector for `symbol_id`, or None if never indexed.
+
+        Every symbol gets an embedding at `index()` time regardless of whether it
+        ever surfaces in a semantic KNN query result — Phase 9's MMR selection
+        (retrieval-upgrades §4) needs that raw vector directly, as its own
+        candidate-similarity measure, not just ranked query hits.
+        """
+        cached = self._cache.get(symbol_id)
+        return cached[1] if cached is not None else None

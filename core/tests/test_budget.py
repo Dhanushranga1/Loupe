@@ -7,7 +7,13 @@ mocking needed, tiktoken is deterministic.
 
 from pathlib import Path
 
-from loupe_core.governor.budget import estimate_tokens, symbol_discovery_cost, symbol_extraction_cost
+from loupe_core.governor.budget import (
+    ancestor_context_text,
+    estimate_tokens,
+    symbol_discovery_cost,
+    symbol_extraction_cost,
+    symbol_extraction_marginal_cost,
+)
 from loupe_core.graph.builder import parse_file
 
 PHASE1_FIXTURES = Path(__file__).parent / "fixtures" / "phase1"
@@ -77,3 +83,62 @@ def test_extraction_cost_slices_exact_byte_range():
     expected_text = pf.source_bytes[symbol.byte_start : symbol.byte_end].decode("utf-8")
 
     assert cost == estimate_tokens(expected_text)
+
+
+# --------------------------------------------------------------------------
+# Differential extraction (Phase 14 §4)
+# --------------------------------------------------------------------------
+
+
+def test_ancestor_context_text_is_signature_plus_docstring_never_body():
+    from loupe_core.parsing.schema import Symbol, SymbolKind
+
+    ancestor = Symbol(
+        id="a" * 16, kind=SymbolKind.CLASS, name="Order", qualified_name="Order", file_path="a.py",
+        byte_start=0, byte_end=999, line_start=1, line_end=50,
+        signature="class Order(Base):", docstring="A single customer order.",
+    )
+    assert ancestor_context_text(ancestor) == "class Order(Base):\nA single customer order."
+
+
+def test_ancestor_context_text_falls_back_to_signature_alone_without_docstring():
+    from loupe_core.parsing.schema import Symbol, SymbolKind
+
+    ancestor = Symbol(
+        id="a" * 16, kind=SymbolKind.CLASS, name="Order", qualified_name="Order", file_path="a.py",
+        byte_start=0, byte_end=999, line_start=1, line_end=50,
+        signature="class Order(Base):", docstring=None,
+    )
+    assert ancestor_context_text(ancestor) == "class Order(Base):"
+
+
+def test_marginal_cost_with_no_ancestor_equals_plain_extraction_cost():
+    pf = parse_file(str(PHASE1_FIXTURES / "utils.py"))
+    symbol = next(s for s in pf.symbols if s.qualified_name == "format_currency")
+
+    assert symbol_extraction_marginal_cost(symbol, pf.source_bytes, ancestor=None, already_charged=False) == (
+        symbol_extraction_cost(symbol, pf.source_bytes)
+    )
+
+
+def test_marginal_cost_with_uncharged_ancestor_adds_ancestor_context_cost():
+    pf = parse_file(str(PHASE1_FIXTURES / "models.py"))
+    method = next(s for s in pf.symbols if s.qualified_name == "Order.__init__")
+    ancestor = next(s for s in pf.symbols if s.qualified_name == "Order")
+
+    own_cost = symbol_extraction_cost(method, pf.source_bytes)
+    marginal = symbol_extraction_marginal_cost(method, pf.source_bytes, ancestor=ancestor, already_charged=False)
+
+    assert marginal == own_cost + estimate_tokens(ancestor_context_text(ancestor))
+    assert marginal > own_cost
+
+
+def test_marginal_cost_with_already_charged_ancestor_equals_own_cost_only():
+    pf = parse_file(str(PHASE1_FIXTURES / "models.py"))
+    method = next(s for s in pf.symbols if s.qualified_name == "Order.total")
+    ancestor = next(s for s in pf.symbols if s.qualified_name == "Order")
+
+    own_cost = symbol_extraction_cost(method, pf.source_bytes)
+    marginal = symbol_extraction_marginal_cost(method, pf.source_bytes, ancestor=ancestor, already_charged=True)
+
+    assert marginal == own_cost

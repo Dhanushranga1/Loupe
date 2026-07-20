@@ -36,7 +36,21 @@ class VectorStore:
 
     def __init__(self, dim: int = 384, db_path: str = ":memory:") -> None:
         self._dim = dim
-        self._conn = sqlite3.connect(db_path)
+        # check_same_thread=False: a real bug found live, not in any test —
+        # mcp_server's IndexerWorker rebuilds the index (and this connection)
+        # inside asyncio.to_thread (indexer_worker.py), a threadpool thread
+        # distinct from whichever thread later serves an HTTP request against
+        # the swapped-in index. sqlite3's default same-thread check raised
+        # "SQLite objects created in a thread can only be used in that same
+        # thread" the first time a live server actually went through a real
+        # incremental reindex before answering a query — no test exercises
+        # that combination (every test builds its LoupeIndex directly, in one
+        # thread). Safe here specifically because this connection is only
+        # ever used by one logical owner at a time, sequentially, never
+        # concurrently from two threads at once — check_same_thread=False
+        # lifts Python's blanket same-thread assertion, it doesn't add
+        # locking that would be needed for genuine concurrent access.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.enable_load_extension(True)
         sqlite_vec.load(self._conn)
         self._conn.enable_load_extension(False)

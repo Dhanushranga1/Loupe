@@ -20,10 +20,11 @@ from fastapi_mcp import FastApiMCP
 from . import dashboard, mcp_tools
 from .bootstrap import bootstrap
 from .config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, MCP_TOOL_SCHEMA_VERSION, load_config
-from .conventions import register_conventions_resource
 from .feedback import FeedbackRequest, FeedbackStore
+from .resources import register_resources
 from .indexer_worker import IndexerWorker
 from .session_manager import SessionManager
+from .session_notes_manager import SessionNotesManager
 from .telemetry import TelemetryWriter
 
 # Local-dev origins for lens/ (Vite's default port). Loupe is a local,
@@ -50,6 +51,7 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         app.state.session_manager = SessionManager()
         app.state.telemetry = TelemetryWriter(app.state.index.loupe_dir / "logs" / "retrieval")
         app.state.feedback_store = FeedbackStore(app.state.index.loupe_dir / "logs" / "feedback")
+        app.state.session_notes_manager = SessionNotesManager(app.state.index.loupe_dir / "logs" / "sessions")
 
         indexer_worker = IndexerWorker(app, resolved_repo_root, extra_exclude_paths=config.index.exclude_paths)
         indexer_worker.start()
@@ -106,10 +108,12 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         # introspection/write endpoints like /loupe/version and POST
         # /feedback must not silently become a tool just by living in the
         # same FastAPI app. E1 adds analyze_impact (5th), E3 adds the
-        # optional submit_feedback (6th), and Phase 7 adds find_code_smells
-        # (7th) — a real, deliberate crossing of the extensions doc's
-        # earlier "6 tools" running count, worth naming explicitly rather
-        # than letting the number drift unremarked.
+        # optional submit_feedback (6th), Phase 7 adds find_code_smells
+        # (7th), and Phase 11 adds session_notes (8th) — a real, deliberate
+        # crossing of the extensions doc's earlier "6 tools" running count,
+        # worth naming explicitly rather than letting the number drift
+        # unremarked. `scope` (Phase 11's other tool-surface addition) adds
+        # zero new tools by design — it's a parameter on three existing ones.
         include_operations=[
             "list_symbols",
             "search_symbols",
@@ -118,13 +122,22 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
             "analyze_impact",
             "submit_feedback",
             "find_code_smells",
+            "session_notes",
         ],
     )
-    # E4 (docs/loupe-extensions.md): registered directly on the MCP SDK
-    # `Server` FastApiMCP builds internally, not on `mcp_tools.router` — see
-    # conventions.py's module docstring for why this is a Resource, not a
-    # route that would need an include_operations entry.
-    register_conventions_resource(mcp.server, lambda: app.state.index.parsed_files.values())
+    # E4 + Phase 14 §1 (docs/loupe-extensions.md, docs/PhaseX/phase-14-adaptive-context-compression.md):
+    # registered directly on the MCP SDK `Server` FastApiMCP builds
+    # internally, not on `mcp_tools.router` — see resources.py's module
+    # docstring for why these are Resources, not routes that would need
+    # an include_operations entry.
+    register_resources(
+        mcp.server,
+        lambda: app.state.index.parsed_files.values(),
+        lambda: app.state.index.graph,
+        lambda: {s.id: s for s in app.state.index.symbols},
+        lambda: app.state.index.semantic_index,
+        lambda: app.state.index.repo_root,
+    )
 
     mcp.mount_http()
 

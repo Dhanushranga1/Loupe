@@ -27,10 +27,11 @@ from loupe_core.parsing.schema import Symbol, SymbolKind
 from loupe_core.retrieval.lexical import LexicalIndex
 from loupe_core.retrieval.semantic import SemanticIndex
 
+from .compute_profiles import resolve_embedding_dim, resolve_embedding_model
 from .config import INDEX_SCHEMA_VERSION, LoupeConfig
 from .ignore import is_path_ignored, load_loupeignore_patterns
 
-LOUPE_SUBDIRS = ["cache", "logs/retrieval", "logs/sessions", "logs/feedback", "eval"]
+LOUPE_SUBDIRS = ["cache", "logs/retrieval", "logs/sessions", "logs/feedback", "eval", "context"]
 
 
 @dataclass
@@ -110,10 +111,17 @@ def bootstrap(repo_root: Path, config: LoupeConfig, embedding_model: object | No
     - The graph (Phase 1), lexical index, and semantic index are always fully
       rebuilt from whatever the current complete symbol set is — both are
       already specified as full-rebuild-every-time in their own phases.
+    - A changed `compute_profile` (docs/PhaseX/compute-profiles.md §3) is
+      treated exactly like a stale schema version: full reindex, plus the
+      old vector store and embedding cache are deleted outright rather than
+      reused — their contents are for a *different embedding model*
+      entirely, not just stale content a content-hash check could recognize
+      and skip.
     """
     repo_root = repo_root.resolve()
     loupe_dir = repo_root / ".loupe"
     schema_path = loupe_dir / "schema_version"
+    compute_profile_path = loupe_dir / "compute_profile"
     file_cache_path = loupe_dir / "cache" / "file_index_cache.json"
     symbol_cache_path = loupe_dir / "cache" / "symbols.json"
 
@@ -124,9 +132,21 @@ def bootstrap(repo_root: Path, config: LoupeConfig, embedding_model: object | No
             current_schema_version = int(schema_path.read_text().strip())
         except ValueError:
             current_schema_version = None
-    full_reindex = is_first_run or current_schema_version != INDEX_SCHEMA_VERSION
+
+    previous_compute_profile = compute_profile_path.read_text().strip() if compute_profile_path.exists() else None
+    compute_profile_changed = previous_compute_profile is not None and previous_compute_profile != config.compute_profile
+
+    full_reindex = is_first_run or current_schema_version != INDEX_SCHEMA_VERSION or compute_profile_changed
 
     _ensure_loupe_dirs(loupe_dir)
+
+    if compute_profile_changed:
+        # §2's dimensionality constraint: embeddings from different models
+        # aren't comparable and usually aren't even the same width — the old
+        # vector store table and embedding cache must be recreated fresh at
+        # the new model's dimension, not left mismatched or silently mixed.
+        (loupe_dir / "vectors.db").unlink(missing_ok=True)
+        (loupe_dir / "cache" / "embeddings.db").unlink(missing_ok=True)
 
     file_cache = (
         FileIndexCache.load(str(file_cache_path))
@@ -158,7 +178,25 @@ def bootstrap(repo_root: Path, config: LoupeConfig, embedding_model: object | No
     link_tests(graph.graph, {s.id: s for s in all_symbols})
 
     lexical_index = LexicalIndex(all_symbols)
+
+    # `embedding_model` stays None in production (real callers never pass it)
+    # — only tests inject a spy/stub model directly. In that real-production
+    # case, resolve and load the compute-profile-selected model by name;
+    # §4's "profile sets defaults, explicit values win" rule is exactly
+    # `resolve_embedding_model`'s own job. Loaded via `get_default_model`'s
+    # own per-name cache (not a fresh `SentenceTransformer(...)` here) so a
+    # process that calls `bootstrap()` more than once for the same resolved
+    # model name — e.g. a test exercising first-run then incremental-catch-up
+    # bootstrap calls back to back — doesn't reload real model weights twice.
+    resolved_dim = resolve_embedding_dim(config.compute_profile)
+    if embedding_model is None:
+        from loupe_core.retrieval.semantic import get_default_model
+
+        resolved_model_name = resolve_embedding_model(config.compute_profile, config.embedding_model)
+        embedding_model = get_default_model(resolved_model_name)
+
     semantic_index = SemanticIndex(
+        dim=resolved_dim,
         cache_db_path=str(loupe_dir / "cache" / "embeddings.db"),
         vector_db_path=str(loupe_dir / "vectors.db"),
         model=embedding_model,
@@ -166,6 +204,7 @@ def bootstrap(repo_root: Path, config: LoupeConfig, embedding_model: object | No
     semantic_index.index(all_symbols)
 
     schema_path.write_text(str(INDEX_SCHEMA_VERSION))
+    compute_profile_path.write_text(config.compute_profile)
     file_cache.save(str(file_cache_path))
     _save_symbol_cache(symbol_cache_path, symbols_by_file)
 
@@ -193,15 +232,27 @@ def update_index(index: LoupeIndex, changed_rel_paths: set[str]) -> LoupeIndex:
     Assumes CWD is still the repo root (same process, same convention as
     `bootstrap()` — see this module's docstring).
 
-    Deliberately opens a *fresh* `SemanticIndex` against the same on-disk
-    cache/vector db files rather than reusing `index.semantic_index` — this
-    function is designed to run inside `asyncio.to_thread` (§4's stated
-    concurrency model), a different OS thread than the one that constructed
-    the original object's `sqlite3` connections, and those connections
-    cannot cross threads (a real `sqlite3.ProgrammingError`, caught by
-    `test_indexer_worker.py`, not a theoretical concern). New connections to
-    the same files are cheap, and the on-disk content-hash cache means this
-    still doesn't trigger real re-embedding for anything unchanged.
+    Opens a *fresh* `SemanticIndex` against the same on-disk cache/vector db
+    files rather than reusing `index.semantic_index` — cheap (the on-disk
+    content-hash cache means this still doesn't trigger real re-embedding
+    for anything unchanged) and keeps this function's own output an
+    independent object from whatever `index` it was called with, not a
+    mutation of shared state.
+
+    Note this alone does *not* make cross-thread access safe: this function
+    runs inside `asyncio.to_thread` (§4's stated concurrency model), so the
+    connections it creates are built on a threadpool thread, while a later
+    HTTP request reading them runs on the main event-loop thread — a real
+    `sqlite3.ProgrammingError` ("SQLite objects created in a thread can only
+    be used in that same thread"), found live on a real `loupe serve`
+    process, not by any test, until `storage/vector_store.py`'s
+    `VectorStore` and `retrieval/semantic.py`'s `EmbeddingCache` both added
+    `check_same_thread=False` to their own `sqlite3.connect()` calls — see
+    those modules' own comments for the full explanation. That fix, not
+    "always build fresh connections," is what actually makes cross-thread
+    access safe; opening fresh connections here is retained for the
+    unrelated, still-good reason of output independence described above.
+    Regression-tested end-to-end at `test_indexer_worker.py::test_semantic_search_works_after_a_real_incremental_reindex`.
     """
     parsed_files = dict(index.parsed_files)
 

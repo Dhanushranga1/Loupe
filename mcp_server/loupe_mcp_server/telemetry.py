@@ -23,6 +23,7 @@ being trained on, not a Phase 4 requirement.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import time
 import uuid
@@ -34,6 +35,22 @@ from typing import Any, Callable
 from fastapi import Request
 
 from .session_manager import session_id_from_request
+
+# Set by search_symbols_impl (docs/PhaseX/loupe-retrieval-upgrades.md §3's own
+# acceptance criterion: "measure, don't assume, the latency cost" of cross-encoder
+# reranking) when it actually runs. A ContextVar, not a return-value field, since
+# every *_impl function's return type is a fixed tool contract (list[SymbolSummary]
+# etc.) that shouldn't grow a timing field just for one tool's internal telemetry —
+# log_tool_call's wrapper reads it back out in its own `finally` block below.
+# Safe under concurrent requests: FastAPI runs each request in its own asyncio
+# Task, and contextvars are copy-on-task, not shared globals.
+_cross_encoder_latency_ms: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "_cross_encoder_latency_ms", default=None
+)
+
+
+def record_cross_encoder_latency(latency_ms: float) -> None:
+    _cross_encoder_latency_ms.set(latency_ms)
 
 
 @dataclass
@@ -49,6 +66,7 @@ class RetrievalLog:
     output_size_bytes: int
     error_code: str | None = None
     outcome: dict[str, Any] | None = None  # always null at log time (§6) — backfilled in Phase 6
+    cross_encoder_latency_ms: float | None = None  # Phase 9 §3 — null for every tool call that isn't search_symbols
     log_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: float = field(default_factory=time.time)
 
@@ -68,6 +86,7 @@ class RetrievalLog:
                 "output_size_bytes": self.output_size_bytes,
                 "error_code": self.error_code,
                 "outcome": self.outcome,
+                "cross_encoder_latency_ms": self.cross_encoder_latency_ms,
             }
         )
 
@@ -142,6 +161,8 @@ def log_tool_call(tool_name: str) -> Callable:
             finally:
                 latency_ms = (time.perf_counter() - start) * 1000
                 entries = _result_entries(result)
+                cross_encoder_latency_ms = _cross_encoder_latency_ms.get()
+                _cross_encoder_latency_ms.set(None)
                 telemetry.write(
                     RetrievalLog(
                         session_id=session_id,
@@ -154,6 +175,7 @@ def log_tool_call(tool_name: str) -> Callable:
                         latency_ms=latency_ms,
                         output_size_bytes=_result_size_bytes(result),
                         error_code=error_code,
+                        cross_encoder_latency_ms=cross_encoder_latency_ms,
                     )
                 )
 

@@ -1,23 +1,21 @@
-"""The context engineering layer (docs/PhaseX/phase-11-context-engineering.md,
-claude-md-generator.md, session-notes.md, scope-aware-retrieval.md).
+"""The context engineering layer (docs/PhaseX/claude-md-generator.md,
+scope-aware-retrieval.md, session-notes.md — each supersedes the simpler,
+combined phase-11-context-engineering.md doc).
 
-Package established now, as part of the mcp_server/cli restructure
-(docs/PhaseX/MASTER_ROADMAP.md), ahead of its actual modules — Phase 11
-itself hasn't been built yet. Lives in `loupe_core` rather than in
-`mcp_server` or `cli` deliberately: `claude_md_generator`'s and
-`session_notes`' actual generation/ranking logic (structured-data-to-template
-rendering, decay-ranked scoring, MMR deduplication) is pure computation with
-no FastAPI/MCP dependency, needed by both the CLI (`loupe generate-context`)
-and the live MCP server (the `session_notes` tool, `architecture://overview`
-in Phase 14) — putting it here keeps that logic framework-free and usable
-from either caller, the same boundary every other `loupe_core` subpackage
-already holds itself to.
+Lives in `loupe_core` rather than in `mcp_server` or `cli` deliberately:
+`claude_md_generator`'s and `session_notes`' generation/ranking logic
+(knapsack budgeting, decay-ranked scoring, MMR deduplication) is pure
+computation with no FastAPI/MCP dependency, needed by both the CLI
+(`loupe generate-context`) and the live MCP server (the `session_notes`
+tool) — putting it here keeps that logic framework-free and usable from
+either caller, the same boundary every other `loupe_core` subpackage holds.
 
-Planned modules, once Phase 11 is actually specced into build-ready work:
-- `claude_md_generator.py` — turns E4's conventions + Phase 1's centrality
-  into a knapsack-budgeted CLAUDE.md (see claude-md-generator.md).
-- `session_notes.py` — decay-ranked, MMR-deduplicated scratchpad storage
-  (see session-notes.md).
-- `scope.py` — path-based and Louvain-cluster-based candidate scoping, hard
-  or soft (PageRank-biased) (see scope-aware-retrieval.md).
+Modules (docs/progress/phase-11/checklist.md — status: complete):
+- `claude_md_generator.py` — knapsack-budgeted, Louvain-cluster-aware,
+  content-hash-freshness-checked CLAUDE.md generation with structured diffing.
+- `scope.py` — explicit path-based hard filtering and Louvain-cluster
+  auto-detected, personalized-PageRank-biased soft-boundary retrieval.
+- `session_notes.py` — decay-ranked (Phase 3's EvictionCache, reused
+  directly), MMR-deduplicated (retrieval-upgrades' MMR, reused directly)
+  scratchpad storage, two-tier (full log + managed active set).
 """

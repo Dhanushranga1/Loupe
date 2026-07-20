@@ -47,6 +47,10 @@ class ErrorHandlingConvention:
     majority_pattern: str | None
     violation_count: int = 0
     violating_symbol_ids: list[str] = field(default_factory=list)
+    total_count: int = 0  # functions with at least one except clause — Phase 11's
+    # claude_md_generator needs this to compute a confidence score
+    # (1 - violation_count/total_count), which wasn't derivable from the
+    # existing fields alone.
 
 
 def _exception_type_text(except_clause: ts.Node, source_bytes: bytes) -> str:
@@ -108,6 +112,7 @@ def mine_error_handling(parsed_files: list[ParsedFile]) -> ErrorHandlingConventi
         majority_pattern=majority_pattern,
         violation_count=len(violating_symbol_ids),
         violating_symbol_ids=violating_symbol_ids,
+        total_count=len(pattern_by_symbol),
     )
 
 
@@ -121,6 +126,9 @@ class DocstringConvention:
     coverage_pct: float
     dominant_style: str  # "google" | "numpy" | "plain" | "none"
     missing_symbol_ids: list[str] = field(default_factory=list)  # public symbols with no docstring at all
+    documented_count: int = 0  # additive, Phase 11: lets claude_md_generator compute a
+    dominant_style_count: int = 0  # confidence score (dominant_style_count/documented_count)
+    # without re-deriving counts coverage_pct's percentage form doesn't expose directly.
 
 
 def _docstring_style(docstring: str) -> str:
@@ -152,10 +160,14 @@ def mine_docstrings(parsed_files: list[ParsedFile]) -> DocstringConvention:
         return DocstringConvention(coverage_pct=0.0, dominant_style="none", missing_symbol_ids=missing_symbol_ids)
 
     style_counts = Counter(_docstring_style(s.docstring) for s in documented)
-    dominant_style, _ = style_counts.most_common(1)[0]
+    dominant_style, dominant_style_count = style_counts.most_common(1)[0]
 
     return DocstringConvention(
-        coverage_pct=coverage_pct, dominant_style=dominant_style, missing_symbol_ids=missing_symbol_ids
+        coverage_pct=coverage_pct,
+        dominant_style=dominant_style,
+        missing_symbol_ids=missing_symbol_ids,
+        documented_count=len(documented),
+        dominant_style_count=dominant_style_count,
     )
 
 

@@ -1,0 +1,15 @@
+# loupe.manifest.yaml
+schema_version: 1
+
+languages:
+  - python
+
+token_budget:
+  default_per_turn: 6000
+  hard_ceiling: 20000
+
+embedding_model: bge-small-en-v1.5
+
+index:
+  symbol_kinds: [function, class, method]
+  exclude_paths: []

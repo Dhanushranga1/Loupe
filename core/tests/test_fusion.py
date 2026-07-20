@@ -4,6 +4,7 @@ Uses the real embedding model (session-scoped, loaded once) — recall
 numbers here reflect genuine model behavior, not fabricated data.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -151,3 +152,104 @@ def test_fuse_never_introduces_a_candidate_neither_signal_found():
 
     assert ranked_ids == {"a", "b"}
     assert "c" not in ranked_ids
+
+
+# --------------------------------------------------------------------------
+# `fuse(..., graph=...)` — personalized centrality (retrieval-upgrades §2),
+# not just `graph/centrality.py`'s own unit tests (test_centrality.py) in
+# isolation, but proof it's actually wired into RRF's centrality term.
+# --------------------------------------------------------------------------
+
+
+def _write(repo_root: Path, rel_path: str, content: str) -> None:
+    path = repo_root / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+@pytest.fixture
+def two_cluster_repo(tmp_path):
+    _write(
+        tmp_path,
+        "cluster_a.py",
+        "def hub_a():\n    return 1\n\n\n"
+        + "\n\n".join(f"def a_caller_{i}():\n    return hub_a()" for i in range(1, 4)),
+    )
+    _write(
+        tmp_path,
+        "cluster_b.py",
+        "def hub_b():\n    return 2\n\n\n"
+        + "\n\n".join(f"def b_caller_{i}():\n    return hub_b()" for i in range(1, 9)),
+    )
+    _write(
+        tmp_path,
+        "bridge.py",
+        "from cluster_a import a_caller_1\nfrom cluster_b import b_caller_1\n\n\n"
+        "def weak_bridge():\n    a_caller_1()\n    b_caller_1()\n",
+    )
+
+    old_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        files = ["cluster_a.py", "cluster_b.py", "bridge.py"]
+        parsed = [parse_file(f) for f in files]
+        g = build_graph(parsed)
+        symbols_by_id = {s.id: s for pf in parsed for s in pf.symbols}
+        yield g, symbols_by_id
+    finally:
+        os.chdir(old_cwd)
+
+
+def _id_by_name(symbols_by_id, qualified_name: str) -> str:
+    return next(s.id for s in symbols_by_id.values() if s.qualified_name == qualified_name)
+
+
+def test_fuse_with_graph_uses_personalized_centrality_not_static(two_cluster_repo):
+    """Static PageRank favors hub_b (8 callers) over hub_a (3). With lexical/semantic
+    tied on both hubs, `fuse(..., graph=None)` must rank by the static score (hub_b
+    first); passing the real graph must flip that order once seeded near hub_a —
+    the concrete proof `fuse()` is actually consulting `graph`, not ignoring it.
+    """
+    g, symbols_by_id = two_cluster_repo
+    hub_a = _id_by_name(symbols_by_id, "hub_a")
+    hub_b = _id_by_name(symbols_by_id, "hub_b")
+    seed = _id_by_name(symbols_by_id, "a_caller_2")
+
+    # hub_a/hub_b swap rank-1/rank-2 between the two signals, so their combined
+    # lexical+semantic RRF contribution is exactly symmetric (rank is positional,
+    # not value-based — equal *scores* would NOT tie here, only equal *rank sums*
+    # do) — isolating centrality as the only remaining thing that can break the tie.
+    lexical_results = [(hub_a, 2.0), (hub_b, 1.0), (seed, 0.5)]
+    semantic_results = [(hub_b, 2.0), (hub_a, 1.0), (seed, 0.5)]
+
+    static_fused = fuse(lexical_results, semantic_results, g.pagerank_scores, top_k=3)
+    static_ranked = [sid for sid, _ in static_fused]
+    assert static_ranked.index(hub_b) < static_ranked.index(hub_a), (
+        "sanity check on fixture construction: static PageRank must favor hub_b"
+    )
+
+    personalized_fused = fuse(lexical_results, semantic_results, g.pagerank_scores, graph=g.graph, top_k=3)
+    personalized_ranked = [sid for sid, _ in personalized_fused]
+    assert personalized_ranked.index(hub_a) < personalized_ranked.index(hub_b), (
+        "personalized centrality, seeded by this call's own candidate pool, must flip the order static PageRank gave"
+    )
+
+
+def test_fuse_with_churn_scores_breaks_ties_toward_the_more_recently_edited_symbol():
+    """Phase 14 §2: churn is an optional fourth RRF signal — omitted entirely
+    by default (every existing test above passes no `churn_scores` at all,
+    proving the signal is opt-in, not a silent behavior change), but when
+    given, must actually influence ranking among otherwise-tied candidates."""
+    lexical_results = [("recently_edited", 1.0), ("untouched_in_months", 1.0)]
+    semantic_results = [("recently_edited", 1.0), ("untouched_in_months", 1.0)]
+    pagerank_scores = {"recently_edited": 0.5, "untouched_in_months": 0.5}
+    churn_scores = {"recently_edited": 0.9, "untouched_in_months": 0.0}
+
+    without_churn = fuse(lexical_results, semantic_results, pagerank_scores, top_k=2)
+    with_churn = fuse(lexical_results, semantic_results, pagerank_scores, top_k=2, churn_scores=churn_scores)
+
+    without_churn_ids = [sid for sid, _ in without_churn]
+    with_churn_ids = [sid for sid, _ in with_churn]
+
+    assert without_churn_ids[0] == "recently_edited", "sanity check: tied without churn, id breaks the tie alphabetically"
+    assert with_churn_ids.index("recently_edited") < with_churn_ids.index("untouched_in_months")

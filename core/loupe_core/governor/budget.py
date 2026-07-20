@@ -47,3 +47,33 @@ def symbol_extraction_cost(symbol: Symbol, source_bytes: bytes) -> int:
     """Cost of the full source slice `[byte_start, byte_end)` (pass-2 extraction)."""
     text = source_bytes[symbol.byte_start : symbol.byte_end].decode("utf-8")
     return estimate_tokens(text)
+
+
+def ancestor_context_text(ancestor: Symbol) -> str:
+    """The narrowly-scoped "shared context" differential extraction reuses
+    across siblings (docs/PhaseX/phase-14-adaptive-context-compression.md
+    §4): an ancestor's own signature + docstring, never its body — a
+    method's own body is never substitutable for a sibling's, so only the
+    ancestor's declaration-level context is ever treated as shared. Public,
+    not module-private: `mcp_tools.py`'s `get_symbol_impl` needs this exact
+    text to build the response content whose cost `symbol_extraction_marginal_cost`
+    below just charged — the two must never drift apart.
+    """
+    if ancestor.docstring:
+        return f"{ancestor.signature}\n{ancestor.docstring}"
+    return ancestor.signature
+
+
+def symbol_extraction_marginal_cost(symbol: Symbol, source_bytes: bytes, ancestor: Symbol | None, already_charged: bool) -> int:
+    """§4: `symbol_extraction_cost(symbol)` plus the ancestor's own
+    signature+docstring cost — *unless* `already_charged` (some sibling
+    method already billed the session for that shared context this
+    session), in which case it's the marginal cost: `symbol`'s own body
+    only. `ancestor=None` (no enclosing class/parent) behaves exactly like
+    the plain `symbol_extraction_cost` — nothing to share, nothing marginal
+    about it.
+    """
+    own_cost = symbol_extraction_cost(symbol, source_bytes)
+    if ancestor is None or already_charged:
+        return own_cost
+    return own_cost + estimate_tokens(ancestor_context_text(ancestor))

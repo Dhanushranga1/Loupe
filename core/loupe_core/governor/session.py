@@ -49,6 +49,12 @@ class SessionState:
     token_used: int = 0
     symbols_in_context: dict[str, ResidentSymbol] = field(default_factory=dict)
     eviction: EvictionCache = field(default_factory=EvictionCache, repr=False)
+    # Phase 14 §4 (docs/PhaseX/phase-14-adaptive-context-compression.md):
+    # ancestor symbol_ids whose shared context (signature + docstring only,
+    # never the body) has already been sent and charged this session — a
+    # sibling method requested afterward is charged the marginal cost only,
+    # via governor/budget.py's symbol_extraction_marginal_cost.
+    shared_context_charged: set[str] = field(default_factory=set)
 
 
 def request_symbols(session: SessionState, candidates: list[KnapsackCandidate]) -> SelectionResult:

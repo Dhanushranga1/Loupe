@@ -23,6 +23,7 @@ from loupe_core.parsing.languages import get_language, get_parser
 from loupe_core.parsing.schema import Symbol, SymbolKind
 
 from .centrality import compute_pagerank
+from .clustering import GraphClusters, compute_clusters
 
 UnresolvedReason = Literal["external", "ambiguous", "no_type_inference"]
 
@@ -63,6 +64,7 @@ class LoupeGraph:
     graph: nx.DiGraph
     unresolved: list[UnresolvedReference] = field(default_factory=list)
     pagerank_scores: dict[str, float] = field(default_factory=dict)
+    clusters: GraphClusters = field(default_factory=GraphClusters)
 
 
 def parse_file(file_path: str) -> ParsedFile:
@@ -133,7 +135,8 @@ def build_graph(parsed_files: list[ParsedFile]) -> LoupeGraph:
                     unresolved.append(UnresolvedReference(symbol.id, raw_text, outcome))
 
     pagerank_scores = compute_pagerank(graph)
-    return LoupeGraph(graph=graph, unresolved=unresolved, pagerank_scores=pagerank_scores)
+    clusters = compute_clusters(graph)
+    return LoupeGraph(graph=graph, unresolved=unresolved, pagerank_scores=pagerank_scores, clusters=clusters)
 
 
 # --------------------------------------------------------------------------

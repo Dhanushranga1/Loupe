@@ -100,14 +100,14 @@ def _parse_hunk_headers(diff_text: str) -> list[tuple[int, int, int, int]]:
     return hunks
 
 
-def _diff_hunks(repo: git.Repo, parent: git.Commit, commit: git.Commit, rel_path: str) -> list[tuple[int, int, int, int]]:
+def diff_hunks_between_commits(repo: git.Repo, parent: git.Commit, commit: git.Commit, rel_path: str) -> list[tuple[int, int, int, int]]:
     """(old_start, old_count, new_start, new_count) per hunk, unified=0 for exact ranges."""
     diff_text = repo.git.diff(parent.hexsha, commit.hexsha, "--unified=0", "--", rel_path)
     return _parse_hunk_headers(diff_text)
 
 
 def diff_hunks_between_contents(old_content: bytes, new_content: bytes) -> list[tuple[int, int, int, int]]:
-    """Same (old_start, old_count, new_start, new_count) hunks as `_diff_hunks`, but between
+    """Same (old_start, old_count, new_start, new_count) hunks as `diff_hunks_between_commits`, but between
     two arbitrary byte contents rather than two git commits — used by Phase 6's outcome
     backfill to compare a symbol's state when retrieved vs. its state now, which need not
     correspond to two git commits at all (e.g. an uncommitted mid-session edit)."""
@@ -178,7 +178,7 @@ def _build_task(repo: git.Repo, commit: git.Commit) -> BenchmarkTask:
             continue
 
         pre_fix_symbols = extract_symbols_from_git_blob(rel_path, pre_fix_source)
-        hunks = _diff_hunks(repo, parent, commit, rel_path)
+        hunks = diff_hunks_between_commits(repo, parent, commit, rel_path)
 
         for old_start, old_count, _new_start, _new_count in hunks:
             matched = [s for s in pre_fix_symbols if hunk_overlaps_symbol(old_start, old_count, s)]
