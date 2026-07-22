@@ -69,3 +69,18 @@ def test_manifest_exclude_paths_and_packages(tmp_path):
     cfg = load_config(tmp_path, global_config_path=tmp_path / "nonexistent-global.yaml")
     assert cfg.index.exclude_paths == ["**/migrations/**"]
     assert cfg.packages == [{"name": "api", "root": "services/api"}]
+
+
+def test_missing_manifest_defaults_experimental_section_to_all_off(tmp_path):
+    cfg = load_config(tmp_path, global_config_path=tmp_path / "nonexistent-global.yaml")
+    assert cfg.experimental.llm_assist is False
+    assert cfg.experimental.features == {}
+
+
+def test_manifest_experimental_section_is_parsed(tmp_path):
+    (tmp_path / "loupe.manifest.yaml").write_text(
+        "experimental:\n  llm_assist: true\n  features:\n    hyde_query_rewrite: true\n    other_feature: false\n"
+    )
+    cfg = load_config(tmp_path, global_config_path=tmp_path / "nonexistent-global.yaml")
+    assert cfg.experimental.llm_assist is True
+    assert cfg.experimental.features == {"hyde_query_rewrite": True, "other_feature": False}

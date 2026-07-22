@@ -385,3 +385,72 @@ def test_check_runs_e9_with_since_flag_against_a_real_git_repo(tmp_path, capsys)
     assert "E9 API contract diff (since" in output
     assert "list_items" in output
     assert "name" in output
+
+
+def test_enable_experimental_blocks_on_confirmation_and_persists_flags_on_accept(tmp_path, monkeypatch, capsys):
+    repo = _make_repo(tmp_path)
+    main(["init", str(repo), "--compute-profile", "cpu_small"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    exit_code = main(["enable-experimental", "hyde_query_rewrite", str(repo)])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Estimated cost per call" in output
+    assert "Enabled hyde_query_rewrite" in output
+
+    from loupe_mcp_server.config import load_config
+    from loupe_mcp_server.experimental_gate import is_experimental_feature_enabled
+
+    config = load_config(repo, global_config_path=repo / "no-global.yaml")
+    assert is_experimental_feature_enabled(config, "hyde_query_rewrite") is True
+
+
+def test_enable_experimental_does_not_persist_flags_on_decline(tmp_path, monkeypatch, capsys):
+    repo = _make_repo(tmp_path)
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
+    main(["init", str(repo)])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+
+    exit_code = main(["enable-experimental", "hyde_query_rewrite", str(repo)])
+
+    assert exit_code == 1
+    assert "Not enabled" in capsys.readouterr().out
+
+    from loupe_mcp_server.config import load_config
+    from loupe_mcp_server.experimental_gate import is_experimental_feature_enabled
+
+    config = load_config(repo, global_config_path=repo / "no-global.yaml")
+    assert is_experimental_feature_enabled(config, "hyde_query_rewrite") is False
+
+
+def test_enable_experimental_is_idempotent_and_skips_prompt_when_already_enabled(tmp_path, monkeypatch, capsys):
+    repo = _make_repo(tmp_path)
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
+    main(["init", str(repo)])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    main(["enable-experimental", "hyde_query_rewrite", str(repo)])
+
+    def _fail_if_prompted(prompt=""):
+        raise AssertionError("should not re-prompt once already enabled")
+
+    monkeypatch.setattr("builtins.input", _fail_if_prompted)
+    exit_code = main(["enable-experimental", "hyde_query_rewrite", str(repo)])
+
+    assert exit_code == 0
+    assert "already enabled" in capsys.readouterr().out
+
+
+def test_enable_experimental_rejects_unknown_feature_without_prompting(tmp_path, monkeypatch, capsys):
+    repo = _make_repo(tmp_path)
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
+    main(["init", str(repo)])
+
+    def _fail_if_prompted(prompt=""):
+        raise AssertionError("should not prompt for an unknown feature")
+
+    monkeypatch.setattr("builtins.input", _fail_if_prompted)
+    exit_code = main(["enable-experimental", "not_a_real_feature", str(repo)])
+
+    assert exit_code == 1
+    assert "Unknown experimental feature" in capsys.readouterr().out

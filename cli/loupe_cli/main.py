@@ -29,9 +29,17 @@ import os
 import sys
 from pathlib import Path
 
+import yaml
+
 from loupe_mcp_server.bootstrap import bootstrap
 from loupe_mcp_server.compute_profiles import DEFAULT_COMPUTE_PROFILE, detect_gpu
 from loupe_mcp_server.config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, load_config
+from loupe_mcp_server.experimental_gate import (
+    KNOWN_FEATURES,
+    UnknownExperimentalFeature,
+    is_experimental_feature_enabled,
+    modeled_cost_for,
+)
 
 
 def render_manifest(compute_profile: str = DEFAULT_COMPUTE_PROFILE) -> str:
@@ -472,6 +480,63 @@ def _parsed_files_at_commit(repo, ref: str) -> list:
     return parsed
 
 
+def _enable_experimental_feature_in_manifest(manifest_path: Path, feature: str) -> None:
+    """Read-modify-write `experimental.llm_assist` + `experimental.features.<feature>`
+    into the manifest. Simplification worth being explicit about: this
+    round-trips the whole file through plain `yaml.safe_load`/`yaml.dump`, so
+    any hand-written comments in an existing manifest (like `render_manifest`'s
+    own `# cpu_small | cpu_medium | gpu_large` inline note) are not preserved
+    — comment-preserving YAML editing (e.g. ruamel.yaml) is real complexity
+    this one-time flag flip doesn't need.
+    """
+    data = yaml.safe_load(manifest_path.read_text()) if manifest_path.exists() else {}
+    if data is None:
+        data = {}
+    experimental = dict(data.get("experimental", {}))
+    experimental["llm_assist"] = True
+    features = dict(experimental.get("features", {}))
+    features[feature] = True
+    experimental["features"] = features
+    data["experimental"] = experimental
+    manifest_path.write_text(yaml.dump(data, sort_keys=False))
+
+
+def cmd_enable_experimental(args: argparse.Namespace) -> int:
+    """`loupe enable-experimental <feature>` (docs/PhaseX/experimental-gate-and-hyde.md
+    §2): the only enablement path for MCP-tool-exposed experimental features
+    like HyDE — there's no human to interactively prompt at the moment Claude
+    itself decides to call a tool mid-session, so the confirmation has to
+    happen here, once, ahead of time. Blocks on an explicit human
+    acknowledgment showing the *modeled* cost estimate; once enabled, the
+    feature stays live for the project until explicitly disabled.
+    """
+    repo_root = Path(args.path).resolve()
+    manifest_path = repo_root / "loupe.manifest.yaml"
+
+    try:
+        modeled = modeled_cost_for(args.feature)
+    except UnknownExperimentalFeature:
+        print(f"Unknown experimental feature: {args.feature!r}. Known features: {sorted(KNOWN_FEATURES)}")
+        return 1
+
+    config = load_config(repo_root)
+    if is_experimental_feature_enabled(config, args.feature):
+        print(f"{args.feature} is already enabled for {repo_root}.")
+        return 0
+
+    print(f"{args.feature}: {modeled.description}")
+    print(f"Estimated cost per call: ~{modeled.estimated_tokens} tokens (modeled, not yet measured).")
+    print("This will make real calls to a generative LLM using credentials the Loupe server holds separately.")
+    answer = input(f"Enable {args.feature}? [y/N] ").strip().lower()
+    if answer != "y":
+        print("Not enabled.")
+        return 1
+
+    _enable_experimental_feature_in_manifest(manifest_path, args.feature)
+    print(f"Enabled {args.feature}. Every real call will be logged to .loupe/logs/experimental/{args.feature}.jsonl.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="loupe")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -521,6 +586,13 @@ def main(argv: list[str] | None = None) -> int:
     check_parser.add_argument("path", nargs="?", default=".")
     check_parser.add_argument("--since", default=None, help="git ref to diff API contracts against (E9)")
     check_parser.set_defaults(func=cmd_check)
+
+    enable_experimental_parser = subparsers.add_parser(
+        "enable-experimental", help="enable a gated, paid-LLM-backed feature after a cost-estimate confirmation"
+    )
+    enable_experimental_parser.add_argument("feature", help="e.g. hyde_query_rewrite")
+    enable_experimental_parser.add_argument("path", nargs="?", default=".")
+    enable_experimental_parser.set_defaults(func=cmd_enable_experimental)
 
     args = parser.parse_args(argv)
     return args.func(args)

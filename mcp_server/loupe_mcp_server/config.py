@@ -55,6 +55,17 @@ class IndexConfig:
 
 
 @dataclass
+class ExperimentalConfig:
+    """docs/PhaseX/experimental-gate-and-hyde.md §1's two-level control: nothing
+    under `features` runs unless `llm_assist` (the category-level switch) is
+    also true — a project that never touches this section is provably
+    running zero experimental (paid-LLM-backed) spend."""
+
+    llm_assist: bool = False
+    features: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass
 class LoupeConfig:
     repo_root: Path
     languages: list[str] = field(default_factory=lambda: ["python"])
@@ -64,6 +75,7 @@ class LoupeConfig:
     cross_encoder_model: str = AUTO
     index: IndexConfig = field(default_factory=IndexConfig)
     packages: list[dict[str, str]] = field(default_factory=list)
+    experimental: ExperimentalConfig = field(default_factory=ExperimentalConfig)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -90,6 +102,7 @@ def load_config(repo_root: Path, global_config_path: Path = GLOBAL_CONFIG_PATH) 
 
     token_budget_data = merged.get("token_budget", {})
     index_data = merged.get("index", {})
+    experimental_data = merged.get("experimental", {})
 
     return LoupeConfig(
         repo_root=repo_root,
@@ -106,4 +119,8 @@ def load_config(repo_root: Path, global_config_path: Path = GLOBAL_CONFIG_PATH) 
             exclude_paths=index_data.get("exclude_paths", []),
         ),
         packages=merged.get("packages", []),
+        experimental=ExperimentalConfig(
+            llm_assist=experimental_data.get("llm_assist", False),
+            features=dict(experimental_data.get("features", {})),
+        ),
     )
