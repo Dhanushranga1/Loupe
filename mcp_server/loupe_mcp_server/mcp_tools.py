@@ -43,6 +43,8 @@ from loupe_core.graph.traversal import expand_dependencies as graph_expand_depen
 from loupe_core.parsing.schema import Symbol
 
 from .bootstrap import LoupeIndex
+from .config import LoupeConfig
+from .experimental_gate import is_experimental_feature_enabled, log_experimental_usage
 from .feedback import FeedbackStore
 from .session_manager import SessionManager, session_id_from_request
 from .telemetry import log_tool_call, record_cross_encoder_latency
@@ -280,7 +282,18 @@ def search_symbols_impl(
     scope_path: str | None = None,
     scope_symbol_id: str | None = None,
     scope_mode: Literal["hard", "soft"] = "soft",
+    config: LoupeConfig | None = None,
+    llm_client: object | None = None,
 ) -> list[SymbolSummary]:
+    """`config`/`llm_client` gate docs/PhaseX/experimental-gate-and-hyde.md's
+    HyDE signal: both must be given, *and* `config.experimental` must have
+    `llm_assist` and `features.hyde_query_rewrite` both true, for HyDE to run
+    at all. `llm_client` is never constructed anywhere in this project's own
+    server startup today (see `hyde.py`'s module docstring) — real callers
+    always pass `llm_client=None`, so HyDE stays fully inert in production
+    regardless of manifest config until an operator wires a real client in
+    themselves. Tests inject a fake client directly.
+    """
     from loupe_core.retrieval.fusion import CANDIDATE_POOL_SIZE, FINAL_TOP_K
     from loupe_core.retrieval.mmr import mmr_select
     from loupe_core.retrieval.rerank import rerank
@@ -318,6 +331,23 @@ def search_symbols_impl(
         else {}
     )
 
+    # docs/PhaseX/experimental-gate-and-hyde.md §6: an optional fourth RRF
+    # signal, gated by both `config` and `llm_client` being provided *and*
+    # the two-level manifest flag being on (see this function's docstring).
+    hyde_results: list[tuple[str, float]] | None = None
+    if config is not None and llm_client is not None and is_experimental_feature_enabled(config, "hyde_query_rewrite"):
+        from loupe_core.retrieval.hyde import hyde_search
+
+        hyde_outcome = hyde_search(query, llm_client, index.semantic_index, top_k=CANDIDATE_POOL_SIZE)
+        hyde_results = hyde_outcome.ranked
+        log_experimental_usage(
+            index.loupe_dir,
+            "hyde_query_rewrite",
+            hyde_outcome.total_tokens,
+            cost_estimate_type="measured",
+            query=query,
+        )
+
     # Retrieval-upgrades §1's 4-stage pipeline: RRF always narrows to its own fixed
     # top-20 (stage 2) — the caller's `top_k` is the *final* result count (post-MMR,
     # stage 4), not RRF's own, so it must not be threaded into `fusion_search` here.
@@ -330,6 +360,7 @@ def search_symbols_impl(
         graph=index.graph.graph,
         top_k=FINAL_TOP_K,
         churn_scores=_load_churn_scores(index),
+        hyde_results=hyde_results,
         **soft_scope_kwargs,
     )
     symbols_by_id = {}
@@ -695,8 +726,21 @@ async def search_symbols_route(
     scope_mode: Literal["hard", "soft"] = "soft",
 ) -> list[SymbolSummary]:
     index: LoupeIndex = request.app.state.index
+    # `hyde_llm_client` is never set in this project's own `main.py` startup
+    # (see `search_symbols_impl`'s docstring) — `getattr(..., None)` means
+    # HyDE stays inert on every real server today, however the manifest is
+    # configured, until an operator wires a real client into `app.state`.
+    config = getattr(request.app.state, "config", None)
+    llm_client = getattr(request.app.state, "hyde_llm_client", None)
     return search_symbols_impl(
-        index, query, top_k=top_k, scope_path=scope_path, scope_symbol_id=scope_symbol_id, scope_mode=scope_mode
+        index,
+        query,
+        top_k=top_k,
+        scope_path=scope_path,
+        scope_symbol_id=scope_symbol_id,
+        scope_mode=scope_mode,
+        config=config,
+        llm_client=llm_client,
     )
 
 

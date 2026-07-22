@@ -253,3 +253,114 @@ def test_fuse_with_churn_scores_breaks_ties_toward_the_more_recently_edited_symb
 
     assert without_churn_ids[0] == "recently_edited", "sanity check: tied without churn, id breaks the tie alphabetically"
     assert with_churn_ids.index("recently_edited") < with_churn_ids.index("untouched_in_months")
+
+
+# --------------------------------------------------------------------------
+# `fuse(..., hyde_results=...)` — docs/PhaseX/experimental-gate-and-hyde.md §6.
+# Unlike churn/centrality (fixed per-repo scores that only re-rank existing
+# candidates), hyde_results is a genuine ranking that can introduce brand
+# new candidates neither lexical nor raw-query semantic ever found — that's
+# the entire reason HyDE is worth its cost.
+# --------------------------------------------------------------------------
+
+
+def test_fuse_without_hyde_results_is_unaffected_default_none():
+    lexical_results = [("a", 1.0)]
+    semantic_results = [("b", 1.0)]
+    pagerank_scores = {"a": 0.5, "b": 0.5}
+
+    with_default = fuse(lexical_results, semantic_results, pagerank_scores, top_k=10)
+    explicit_none = fuse(lexical_results, semantic_results, pagerank_scores, top_k=10, hyde_results=None)
+
+    assert with_default == explicit_none
+
+
+def test_fuse_with_hyde_results_can_introduce_a_candidate_neither_other_signal_found():
+    lexical_results = [("a", 1.0)]
+    semantic_results = [("b", 1.0)]
+    pagerank_scores = {"a": 0.5, "b": 0.5, "c": 0.9}
+    hyde_results = [("c", 1.0)]  # only HyDE's hypothetical-answer embedding found "c"
+
+    fused = fuse(lexical_results, semantic_results, pagerank_scores, top_k=10, hyde_results=hyde_results)
+    ranked_ids = {symbol_id for symbol_id, _ in fused}
+
+    assert ranked_ids == {"a", "b", "c"}, "hyde_results must be able to add a candidate, unlike centrality/churn"
+
+
+def test_fuse_with_hyde_results_raises_a_candidates_score_without_affecting_others():
+    lexical_results = [("x", 1.0), ("y", 1.0)]
+    semantic_results = [("x", 1.0), ("y", 1.0)]
+    pagerank_scores = {"x": 0.5, "y": 0.5}
+    hyde_results = [("y", 1.0)]  # only "y" gets a hyde vote; "x" has none
+
+    without_hyde = dict(fuse(lexical_results, semantic_results, pagerank_scores, top_k=2))
+    with_hyde = dict(fuse(lexical_results, semantic_results, pagerank_scores, top_k=2, hyde_results=hyde_results))
+
+    assert with_hyde["y"] > without_hyde["y"], "a candidate hyde ranks highly must score higher with it folded in"
+    assert with_hyde["x"] == without_hyde["x"], "a candidate absent from hyde_results is completely unaffected by it"
+
+
+def test_hyde_rescues_a_vague_query_that_raw_semantic_search_misses(real_model):
+    """docs/PhaseX/experimental-gate-and-hyde.md §7's acceptance criterion:
+    a deliberately vague query where raw-query semantic search fails to
+    surface the true target is correctly rescued once HyDE's hypothetical-
+    answer embedding is added as a fourth RRF signal.
+
+    Empirically calibrated against the real embedding model (same discipline
+    used for E5's duplicate-code similarity threshold): with a deliberately
+    narrow candidate pool (top_k=1 per signal — an artificially tight
+    window, constructed the same way the file's other hand-built adversarial
+    pair above is, to force a genuine "missing entirely" case rather than
+    "ranked a bit lower"), this exact vague phrasing's raw-query semantic
+    and lexical top-1 both land on other, real decoys, genuinely excluding
+    the true target (`retry_with_backoff`) from the candidate pool
+    altogether — verified below, not assumed.
+    """
+    from loupe_core.parsing.schema import Symbol, SymbolKind
+
+    corpus = {
+        "retry_with_backoff": "Retries a failed network call with exponential backoff, "
+        "giving up after the maximum number of attempts.",
+        "give_up_on_stuck_job": "Abandon a job that has been stuck in the queue for too long "
+        "and mark it as failed.",
+        "restart_stalled_worker": "Kill and respawn a worker process that has stopped "
+        "responding to heartbeats.",
+        "shutdown_gracefully": "Stop accepting new requests and wait for in-flight requests "
+        "to finish before exiting.",
+        "clear_cache": "Empty the in-memory cache of previously computed results.",
+        "log_error": "Write an error message to the application log.",
+    }
+    symbols = [
+        Symbol(
+            id=f"{i:016x}", kind=SymbolKind.FUNCTION, name=name, qualified_name=name, file_path=f"{name}.py",
+            byte_start=0, byte_end=1, line_start=1, line_end=1, signature=f"def {name}():", docstring=doc,
+        )
+        for i, (name, doc) in enumerate(corpus.items())
+    ]
+    id_by_name = {s.name: s.id for s in symbols}
+
+    semantic_index = SemanticIndex(model=real_model)
+    semantic_index.index(symbols)
+    lexical_index = LexicalIndex(symbols)
+    pagerank_scores = {s.id: 0.5 for s in symbols}
+
+    query = "how do we keep it from hammering a dead endpoint over and over"
+    small_pool = 1  # narrow enough that the true target is genuinely excluded without HyDE
+
+    lexical_results = lexical_index.query(query, top_k=small_pool)
+    semantic_results = semantic_index.query(query, top_k=small_pool)
+    target_id = id_by_name["retry_with_backoff"]
+
+    without_hyde = fuse(lexical_results, semantic_results, pagerank_scores, top_k=3)
+    assert target_id not in {sid for sid, _ in without_hyde}, (
+        "sanity check: the true target must genuinely be missing without HyDE, or this isn't a real rescue"
+    )
+
+    hypothetical_answer = (
+        "def retry_with_backoff(fn):\n"
+        '    """Retry fn with exponential backoff, stop after max_attempts."""\n    ...'
+    )
+    hyde_results = semantic_index.query(hypothetical_answer, top_k=small_pool)
+
+    with_hyde = fuse(lexical_results, semantic_results, pagerank_scores, top_k=3, hyde_results=hyde_results)
+    assert target_id in {sid for sid, _ in with_hyde}, "HyDE's hypothetical-answer signal must rescue the true target"

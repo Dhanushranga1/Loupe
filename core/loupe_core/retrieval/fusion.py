@@ -35,6 +35,7 @@ def fuse(
     scope_seed_ids: set[str] | None = None,
     in_scope_mass: float = 1.0,
     churn_scores: dict[str, float] | None = None,
+    hyde_results: list[tuple[str, float]] | None = None,
 ) -> list[tuple[str, float]]:
     """RRF-fuse already-ranked lexical/semantic candidate lists, folding in centrality.
 
@@ -69,10 +70,23 @@ def fuse(
     (`retrieval/churn.py`'s `compute_churn_scores`), giving temporally
     active symbols a consistent, mild boost alongside centrality's
     structural one.
+
+    `hyde_results` (docs/PhaseX/experimental-gate-and-hyde.md §6, optional,
+    `None` by default): unlike centrality/churn's fixed per-repo scores,
+    this is a genuine query-dependent *ranking* — the result of embedding a
+    generative LLM's hypothetical answer to the query and running semantic
+    search against it — so it's folded in exactly like `lexical_results`/
+    `semantic_results` rather than like centrality: it also contributes new
+    candidate ids, not just re-ordering among ones the other two already
+    found. This is what lets HyDE rescue a vague query whose raw-text
+    embedding misses the true target entirely.
     """
     lexical_rank = {symbol_id: i + 1 for i, (symbol_id, _) in enumerate(lexical_results)}
     semantic_rank = {symbol_id: i + 1 for i, (symbol_id, _) in enumerate(semantic_results)}
-    candidates = set(lexical_rank) | set(semantic_rank)
+    hyde_rank = (
+        {symbol_id: i + 1 for i, (symbol_id, _) in enumerate(hyde_results)} if hyde_results is not None else {}
+    )
+    candidates = set(lexical_rank) | set(semantic_rank) | set(hyde_rank)
 
     if graph is not None:
         personalization_seeds = scope_seed_ids if scope_seed_ids is not None else candidates
@@ -94,6 +108,8 @@ def fuse(
     if churn_scores is not None:
         churn_sorted = sorted(candidates, key=lambda sid: (-churn_scores.get(sid, 0.0), sid))
         rank_maps.append({symbol_id: i + 1 for i, symbol_id in enumerate(churn_sorted)})
+    if hyde_results is not None:
+        rank_maps.append(hyde_rank)
 
     scores: dict[str, float] = {}
     for symbol_id in candidates:

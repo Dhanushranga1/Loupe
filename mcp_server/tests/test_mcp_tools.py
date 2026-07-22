@@ -268,6 +268,86 @@ def test_search_symbols_reproduces_phase2_top_result(test_index):
 
 
 # --------------------------------------------------------------------------
+# HyDE gating (docs/PhaseX/experimental-gate-and-hyde.md) — proving the gate
+# is real: `search_symbols_impl` must make zero calls to the injected LLM
+# client unless both `config` and `llm_client` are given *and* the two-level
+# manifest flag is on, and must log real telemetry when it does fire.
+# --------------------------------------------------------------------------
+
+
+class _FakeLLMClient:
+    def __init__(self, response_text: str = "a hypothetical answer", total_tokens: int = 55) -> None:
+        from loupe_core.retrieval.hyde import LLMResponse
+
+        self._response = LLMResponse(text=response_text, total_tokens=total_tokens)
+        self.call_count = 0
+
+    def generate(self, prompt: str):
+        self.call_count += 1
+        return self._response
+
+
+def _experimental_config(*, llm_assist: bool, feature_enabled: bool):
+    from loupe_mcp_server.config import ExperimentalConfig, LoupeConfig
+
+    return LoupeConfig(
+        repo_root=Path("."),
+        experimental=ExperimentalConfig(llm_assist=llm_assist, features={"hyde_query_rewrite": feature_enabled}),
+    )
+
+
+def test_search_symbols_with_client_injected_but_no_config_never_calls_the_llm_client(test_index):
+    """Matches production's real call shape (`search_symbols_route` never sets
+    `app.state.hyde_llm_client`, so `llm_client` is always `None` there) —
+    proving `config is not None` is required, not just `llm_client`, even if
+    a client somehow were injected without a config to gate it."""
+    spy = _FakeLLMClient()
+
+    search_symbols_impl(test_index, "validate an email address", top_k=3, llm_client=spy)
+
+    assert spy.call_count == 0
+
+
+def test_search_symbols_with_feature_disabled_never_calls_the_llm_client_even_if_injected(test_index):
+    config = _experimental_config(llm_assist=False, feature_enabled=False)
+    spy = _FakeLLMClient()
+
+    search_symbols_impl(test_index, "validate an email address", top_k=3, config=config, llm_client=spy)
+
+    assert spy.call_count == 0
+
+
+def test_search_symbols_with_master_switch_off_never_calls_the_llm_client_even_if_feature_flag_on(test_index):
+    """§1's two-level gate: a stray per-feature `true` alone can never turn on real spend."""
+    config = _experimental_config(llm_assist=False, feature_enabled=True)
+    spy = _FakeLLMClient()
+
+    search_symbols_impl(test_index, "validate an email address", top_k=3, config=config, llm_client=spy)
+
+    assert spy.call_count == 0
+
+
+def test_search_symbols_with_gate_enabled_calls_the_llm_client_once_and_logs_experimental_telemetry(test_index):
+    import json
+
+    config = _experimental_config(llm_assist=True, feature_enabled=True)
+    spy = _FakeLLMClient(response_text="validate_email(email): checks for '@' and '.'", total_tokens=77)
+
+    log_path = test_index.loupe_dir / "logs" / "experimental" / "hyde_query_rewrite.jsonl"
+    existing_lines = log_path.read_text().splitlines() if log_path.exists() else []
+
+    search_symbols_impl(test_index, "validate an email address", top_k=3, config=config, llm_client=spy)
+
+    assert spy.call_count == 1
+    new_lines = log_path.read_text().splitlines()
+    assert len(new_lines) == len(existing_lines) + 1
+    entry = json.loads(new_lines[-1])
+    assert entry["feature"] == "hyde_query_rewrite"
+    assert entry["tokens"] == 77
+    assert entry["cost_estimate_type"] == "measured"
+
+
+# --------------------------------------------------------------------------
 # Churn (Phase 14 §2) — loaded from .loupe/cache/churn.json when present
 # --------------------------------------------------------------------------
 

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from loupe_core.governor.budget import estimate_tokens
+from loupe_core.retrieval.hyde import HYDE_PROMPT_TEMPLATE
 
 from .config import LoupeConfig
 
@@ -46,11 +47,6 @@ class ModeledCost:
         return estimate_tokens(self.representative_prompt) + self.typical_completion_tokens
 
 
-HYDE_PROMPT_TEMPLATE = (
-    "Write a short, plausible, hypothetical answer or code snippet that "
-    "would appear in this codebase in response to the following query.\n\n"
-    "Query: {query}"
-)
 _HYDE_REPRESENTATIVE_QUERY = "how does the retry logic handle a timed-out request?"
 
 KNOWN_FEATURES: dict[str, ModeledCost] = {
