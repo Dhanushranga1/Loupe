@@ -22,7 +22,8 @@ def test_status_before_init_reports_no_loupe_dir(tmp_path, capsys):
     assert "No .loupe/" in capsys.readouterr().out
 
 
-def test_init_creates_manifest_and_ignore_file(tmp_path, capsys):
+def test_init_creates_manifest_and_ignore_file(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
     repo = _make_repo(tmp_path)
     exit_code = main(["init", str(repo)])
     assert exit_code == 0
@@ -31,7 +32,8 @@ def test_init_creates_manifest_and_ignore_file(tmp_path, capsys):
     assert "Created" in capsys.readouterr().out
 
 
-def test_init_is_idempotent_and_does_not_overwrite(tmp_path, capsys):
+def test_init_is_idempotent_and_does_not_overwrite(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
     repo = _make_repo(tmp_path)
     main(["init", str(repo)])
     (repo / "loupe.manifest.yaml").write_text("languages: [python]\ncustom_marker: true\n")
@@ -40,6 +42,76 @@ def test_init_is_idempotent_and_does_not_overwrite(tmp_path, capsys):
 
     assert "custom_marker" in (repo / "loupe.manifest.yaml").read_text()
     assert "already exists" in capsys.readouterr().out
+
+
+def test_init_with_no_gpu_defaults_to_cpu_small_without_prompting(tmp_path, monkeypatch):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
+
+    def _fail_if_prompted(prompt=""):
+        raise AssertionError("should not prompt when no GPU is detected")
+
+    monkeypatch.setattr("builtins.input", _fail_if_prompted)
+    repo = _make_repo(tmp_path)
+
+    main(["init", str(repo)])
+
+    assert "compute_profile: cpu_small" in (repo / "loupe.manifest.yaml").read_text()
+
+
+def test_init_with_gpu_prompts_and_defaults_to_cpu_small_on_decline(tmp_path, monkeypatch):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    repo = _make_repo(tmp_path)
+
+    main(["init", str(repo)])
+
+    assert "compute_profile: cpu_small" in (repo / "loupe.manifest.yaml").read_text()
+
+
+def test_init_with_gpu_prompts_and_uses_gpu_large_on_accept(tmp_path, monkeypatch):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    repo = _make_repo(tmp_path)
+
+    main(["init", str(repo)])
+
+    assert "compute_profile: gpu_large" in (repo / "loupe.manifest.yaml").read_text()
+
+
+def test_init_explicit_gpu_large_with_no_gpu_warns_and_falls_back_on_decline(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    repo = _make_repo(tmp_path)
+
+    main(["init", str(repo), "--compute-profile", "gpu_large"])
+
+    output = capsys.readouterr().out
+    assert "No GPU detected" in output
+    assert "compute_profile: cpu_small" in (repo / "loupe.manifest.yaml").read_text()
+
+
+def test_init_explicit_gpu_large_with_no_gpu_proceeds_on_confirm(tmp_path, monkeypatch):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    repo = _make_repo(tmp_path)
+
+    main(["init", str(repo), "--compute-profile", "gpu_large"])
+
+    assert "compute_profile: gpu_large" in (repo / "loupe.manifest.yaml").read_text()
+
+
+def test_init_explicit_profile_with_gpu_present_skips_prompt(tmp_path, monkeypatch):
+    monkeypatch.setattr("loupe_cli.main.detect_gpu", lambda: True)
+
+    def _fail_if_prompted(prompt=""):
+        raise AssertionError("explicit --compute-profile should not prompt")
+
+    monkeypatch.setattr("builtins.input", _fail_if_prompted)
+    repo = _make_repo(tmp_path)
+
+    main(["init", str(repo), "--compute-profile", "cpu_medium"])
+
+    assert "compute_profile: cpu_medium" in (repo / "loupe.manifest.yaml").read_text()
 
 
 def test_index_prints_symbol_count_and_unresolved_count(tmp_path, capsys):

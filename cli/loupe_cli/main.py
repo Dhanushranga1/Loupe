@@ -10,13 +10,14 @@ so the CLI's own surface (argument parsing, output formatting) stays free of
 any FastAPI/MCP-specific code, and the two packages can evolve or even ship
 independently.
 
-Simplification worth noting: §9 describes `loupe init` as "interactively"
-generating config. This implementation writes sensible, documented defaults
-non-interactively rather than prompting — nothing in phase-4-systems.md §8's
-Definition of Done tests interactive-prompt behavior, and a project can
-already commit the generated manifest with just `languages` set and inherit
-everything else (loupe-target-project-standard.md §3), so a prompt flow
-isn't load-bearing for correctness here.
+Simplification revised, narrowly, by compute-profiles.md §4: §9 originally
+described `loupe init` as "interactively" generating config, and this
+implementation deliberately made it non-interactive instead (nothing in
+phase-4-systems.md §8's Definition of Done tests prompt behavior). Compute
+profiles reopen exactly one corner of that: hardware detection has a real,
+one-time decision worth surfacing to a human right at `init` — "a GPU was
+detected, want the higher-quality profile?" — kept as the *only* interactive
+moment in this command, not a reversal of the broader non-interactive design.
 """
 
 from __future__ import annotations
@@ -29,9 +30,12 @@ import sys
 from pathlib import Path
 
 from loupe_mcp_server.bootstrap import bootstrap
+from loupe_mcp_server.compute_profiles import DEFAULT_COMPUTE_PROFILE, detect_gpu
 from loupe_mcp_server.config import DEFAULT_PORT, INDEX_SCHEMA_VERSION, load_config
 
-DEFAULT_MANIFEST = f"""\
+
+def render_manifest(compute_profile: str = DEFAULT_COMPUTE_PROFILE) -> str:
+    return f"""\
 # loupe.manifest.yaml
 schema_version: {INDEX_SCHEMA_VERSION}
 
@@ -42,12 +46,15 @@ token_budget:
   default_per_turn: 6000
   hard_ceiling: 20000
 
-embedding_model: bge-small-en-v1.5
+compute_profile: {compute_profile}   # cpu_small | cpu_medium | gpu_large
+embedding_model: auto
+cross_encoder_model: auto
 
 index:
   symbol_kinds: [function, class, method]
   exclude_paths: []
 """
+
 
 DEFAULT_LOUPEIGNORE = """\
 # .loupeignore
@@ -60,6 +67,40 @@ build/
 """
 
 
+def _resolve_init_compute_profile(explicit_profile: str | None) -> str:
+    """§4's compute-profile selection at `init` time: detection *informs*, it
+    never silently decides on someone's behalf — two different teammates'
+    machines shouldn't produce two different default behaviors for the same
+    repo. Three cases:
+    - no explicit `--compute-profile` and no GPU -> `cpu_small`, no prompt
+      (asking about an option that would perform poorly anyway is friction
+      without a real choice behind it).
+    - no explicit flag but a GPU is present -> prompt once; declining or
+      skipping leaves the profile at `cpu_small`.
+    - explicit `gpu_large` with no GPU present -> warn plainly, proceed only
+      if confirmed (allowed, not blocked — a slow-but-working setup might be
+      exactly what's wanted for a one-time high-quality index).
+    """
+    has_gpu = detect_gpu()
+
+    if explicit_profile is not None:
+        if explicit_profile == "gpu_large" and not has_gpu:
+            print("No GPU detected — this profile will be significantly slower for full-repo indexing on CPU.")
+            answer = input("Continue anyway? [y/N] ").strip().lower()
+            if answer != "y":
+                print(f"Falling back to {DEFAULT_COMPUTE_PROFILE}.")
+                return DEFAULT_COMPUTE_PROFILE
+        return explicit_profile
+
+    if has_gpu:
+        answer = input(
+            "A GPU was detected. Use the higher-quality gpu_large profile instead of the default cpu_small? [y/N] "
+        ).strip().lower()
+        return "gpu_large" if answer == "y" else DEFAULT_COMPUTE_PROFILE
+
+    return DEFAULT_COMPUTE_PROFILE
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     repo_root = Path(args.path).resolve()
     manifest_path = repo_root / "loupe.manifest.yaml"
@@ -68,8 +109,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     if manifest_path.exists():
         print(f"{manifest_path} already exists, leaving it untouched.")
     else:
-        manifest_path.write_text(DEFAULT_MANIFEST)
-        print(f"Created {manifest_path}")
+        compute_profile = _resolve_init_compute_profile(getattr(args, "compute_profile", None))
+        manifest_path.write_text(render_manifest(compute_profile))
+        print(f"Created {manifest_path} (compute_profile: {compute_profile})")
 
     if ignore_path.exists():
         print(f"{ignore_path} already exists, leaving it untouched.")
@@ -436,6 +478,12 @@ def main(argv: list[str] | None = None) -> int:
 
     init_parser = subparsers.add_parser("init", help="generate loupe.manifest.yaml and .loupeignore")
     init_parser.add_argument("path", nargs="?", default=".")
+    init_parser.add_argument(
+        "--compute-profile",
+        choices=["cpu_small", "cpu_medium", "gpu_large"],
+        default=None,
+        help="skip GPU auto-detection/prompting and use this profile",
+    )
     init_parser.set_defaults(func=cmd_init)
 
     index_parser = subparsers.add_parser("index", help="run a full/incremental index and print a summary")

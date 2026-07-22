@@ -1,12 +1,15 @@
 """Tests for loupe_mcp_server/bootstrap.py (docs/phase-4-systems.md §8 — Bootstrap)."""
 
+import dataclasses
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from loupe_mcp_server import bootstrap as bootstrap_module
-from loupe_mcp_server.bootstrap import bootstrap
+from loupe_mcp_server.bootstrap import bootstrap, update_index
+from loupe_mcp_server.compute_profiles import resolve_embedding_dim
 from loupe_mcp_server.config import load_config
 from loupe_core.graph.builder import EdgeType
 
@@ -193,3 +196,101 @@ def test_full_index_without_any_exclude_config_does_not_silently_exclude_a_looka
 
     assert len(index.symbols) == PHASE1_SYMBOL_COUNT + 3
     assert any("fake_pkg" in s.file_path for s in index.symbols)
+
+
+class _FixedDimFakeModel:
+    """Deterministic, zero-real-embedding stand-in for a compute-profile's
+    model — only the *dimension* matters for these tests, and downloading
+    real bge-base/bge-large weights just to assert a sqlite table's column
+    width would be a slow, pointless dependency on network access."""
+
+    def __init__(self, dim: int) -> None:
+        self._dim = dim
+
+    def encode(self, texts, **kwargs):
+        return [[0.1] * self._dim for _ in texts]
+
+
+def _connect_vec(vectors_db_path: Path) -> sqlite3.Connection:
+    import sqlite_vec
+
+    conn = sqlite3.connect(str(vectors_db_path))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    return conn
+
+
+def _vec_symbols_column_width(vectors_db_path: Path) -> str:
+    conn = _connect_vec(vectors_db_path)
+    try:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'vec_symbols'").fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
+def _vec_symbols_row_count(vectors_db_path: Path) -> int:
+    conn = _connect_vec(vectors_db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM vec_symbols").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_changing_compute_profile_forces_full_reindex_and_recreates_vector_store_at_new_dimension(
+    mock_repo, monkeypatch
+):
+    config = load_config(mock_repo, global_config_path=mock_repo / "no-global.yaml")
+    assert config.compute_profile == "cpu_small"
+    small_dim = resolve_embedding_dim("cpu_small")
+    bootstrap(mock_repo, config, embedding_model=_FixedDimFakeModel(small_dim))
+
+    vectors_db_path = mock_repo / ".loupe" / "vectors.db"
+    assert f"FLOAT[{small_dim}]" in _vec_symbols_column_width(vectors_db_path)
+    assert _vec_symbols_row_count(vectors_db_path) == PHASE1_SYMBOL_COUNT
+
+    gpu_config = dataclasses.replace(config, compute_profile="gpu_large")
+    large_dim = resolve_embedding_dim("gpu_large")
+    assert large_dim != small_dim
+
+    call_count_fn = _spy_on_extract_symbols(monkeypatch)
+    index = bootstrap(mock_repo, gpu_config, embedding_model=_FixedDimFakeModel(large_dim))
+
+    assert call_count_fn() == len(PHASE1_FILES), "a compute_profile change must force a full reindex of every file"
+    assert index.embedding_dim == large_dim
+
+    # The table schema itself changed to the new width — proof the old
+    # narrower table was actually recreated, not just logically ignored.
+    assert f"FLOAT[{large_dim}]" in _vec_symbols_column_width(vectors_db_path)
+    # Exactly the current symbol count, not double — proof old- and
+    # new-profile vectors were never mixed in the same table; the old file
+    # was discarded outright rather than reused/appended to.
+    assert _vec_symbols_row_count(vectors_db_path) == PHASE1_SYMBOL_COUNT
+
+
+def test_update_index_reuses_the_bootstrapped_compute_profiles_dim_and_model(mock_repo):
+    """Regression test for a real bug found while wiring this up: `update_index`
+    used to build a brand-new `SemanticIndex` with neither `dim=` nor `model=`
+    passed through, silently falling back to the base 384-dim default — which
+    would have reopened the on-disk vector table at the wrong width for any
+    project running a non-default compute profile, on the very first
+    incremental reindex after the initial full one.
+    """
+    config = dataclasses.replace(load_config(mock_repo, global_config_path=mock_repo / "no-global.yaml"))
+    gpu_config = dataclasses.replace(config, compute_profile="gpu_large")
+    large_dim = resolve_embedding_dim("gpu_large")
+    index = bootstrap(mock_repo, gpu_config, embedding_model=_FixedDimFakeModel(large_dim))
+    assert index.embedding_dim == large_dim
+
+    (mock_repo / "utils.py").write_text(
+        "def format_currency(amount: float) -> str:\n"
+        '    """Reformatted body — just needs to change the content hash."""\n'
+        "    return f'${amount:.2f} USD'\n"
+    )
+
+    updated = update_index(index, {"utils.py"})
+
+    assert updated.embedding_dim == large_dim
+    vectors_db_path = mock_repo / ".loupe" / "vectors.db"
+    assert f"FLOAT[{large_dim}]" in _vec_symbols_column_width(vectors_db_path)

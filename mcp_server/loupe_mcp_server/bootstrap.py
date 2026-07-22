@@ -25,7 +25,7 @@ from loupe_core.parsing.incremental import FileIndexCache
 from loupe_core.parsing.languages import get_parser
 from loupe_core.parsing.schema import Symbol, SymbolKind
 from loupe_core.retrieval.lexical import LexicalIndex
-from loupe_core.retrieval.semantic import SemanticIndex
+from loupe_core.retrieval.semantic import EMBEDDING_DIM, SemanticIndex
 
 from .compute_profiles import resolve_embedding_dim, resolve_embedding_model
 from .config import INDEX_SCHEMA_VERSION, LoupeConfig
@@ -45,6 +45,8 @@ class LoupeIndex:
     lexical_index: LexicalIndex
     semantic_index: SemanticIndex
     file_cache: FileIndexCache
+    embedding_dim: int = EMBEDDING_DIM
+    embedding_model: object | None = None
 
     @property
     def symbols(self) -> list[Symbol]:
@@ -216,6 +218,8 @@ def bootstrap(repo_root: Path, config: LoupeConfig, embedding_model: object | No
         lexical_index=lexical_index,
         semantic_index=semantic_index,
         file_cache=file_cache,
+        embedding_dim=resolved_dim,
+        embedding_model=embedding_model,
     )
 
 
@@ -237,7 +241,13 @@ def update_index(index: LoupeIndex, changed_rel_paths: set[str]) -> LoupeIndex:
     content-hash cache means this still doesn't trigger real re-embedding
     for anything unchanged) and keeps this function's own output an
     independent object from whatever `index` it was called with, not a
-    mutation of shared state.
+    mutation of shared state. Reuses `index.embedding_dim`/`index.embedding_model`
+    (resolved once, at `bootstrap()` time, from the active `compute_profile`)
+    rather than re-resolving from config or falling back to bare defaults —
+    an earlier version of this function built `SemanticIndex` with neither,
+    which silently reopened the on-disk vector table at the wrong dimension
+    for any non-default compute profile on the very first incremental
+    reindex after a full one.
 
     Note this alone does *not* make cross-thread access safe: this function
     runs inside `asyncio.to_thread` (§4's stated concurrency model), so the
@@ -273,8 +283,10 @@ def update_index(index: LoupeIndex, changed_rel_paths: set[str]) -> LoupeIndex:
 
     lexical_index = LexicalIndex(all_symbols)
     semantic_index = SemanticIndex(
+        dim=index.embedding_dim,
         cache_db_path=str(index.loupe_dir / "cache" / "embeddings.db"),
         vector_db_path=str(index.loupe_dir / "vectors.db"),
+        model=index.embedding_model,
     )
     semantic_index.index(all_symbols)
 
@@ -291,4 +303,6 @@ def update_index(index: LoupeIndex, changed_rel_paths: set[str]) -> LoupeIndex:
         lexical_index=lexical_index,
         semantic_index=semantic_index,
         file_cache=index.file_cache,
+        embedding_dim=index.embedding_dim,
+        embedding_model=index.embedding_model,
     )
