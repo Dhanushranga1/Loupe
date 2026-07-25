@@ -19,6 +19,7 @@ from loupe_mcp_server.mcp_tools import (
     GetSymbolResponse,
     SymbolDecomposition,
     analyze_impact_impl,
+    build_ledger_impl,
     expand_dependencies_impl,
     find_code_smells_impl,
     get_symbol_impl,
@@ -512,6 +513,88 @@ def test_analyze_impact_default_cap_is_not_hit_by_a_small_result_set(many_caller
     assert len(report.directly_affected) == 10
     assert report.directly_affected_total == 10
     assert report.transitively_affected == []
+
+
+# --------------------------------------------------------------------------
+# build_ledger (docs/target-project-build-ledger.md) — the *_impl-level
+# concerns not covered by core/tests/test_build_ledger.py (the pure
+# BuildLedgerStore mechanism) or test_integration.py (the real-HTTP wiring):
+# argument validation and LoupeIndex-specific plumbing (symbols_by_id from
+# index.symbols, graph/pagerank from index.graph, path from index.loupe_dir).
+# --------------------------------------------------------------------------
+
+
+def test_build_ledger_set_status_missing_symbol_id_raises_400(test_index):
+    with pytest.raises(HTTPException) as exc_info:
+        build_ledger_impl(test_index, "set_status", status="planned")
+    assert exc_info.value.status_code == 400
+
+
+def test_build_ledger_set_status_missing_status_raises_400(test_index):
+    symbol = _by_qualified_name(test_index, "validate_email")
+    with pytest.raises(HTTPException) as exc_info:
+        build_ledger_impl(test_index, "set_status", symbol_id=symbol.id)
+    assert exc_info.value.status_code == 400
+
+
+def test_build_ledger_set_status_unknown_symbol_id_raises_404(test_index):
+    with pytest.raises(HTTPException) as exc_info:
+        build_ledger_impl(test_index, "set_status", symbol_id="not-a-real-id", status="planned")
+    assert exc_info.value.status_code == 404
+
+
+def test_build_ledger_get_missing_symbol_id_raises_400(test_index):
+    with pytest.raises(HTTPException) as exc_info:
+        build_ledger_impl(test_index, "get")
+    assert exc_info.value.status_code == 400
+
+
+def test_build_ledger_unknown_action_raises_400(test_index):
+    with pytest.raises(HTTPException) as exc_info:
+        build_ledger_impl(test_index, "not_a_real_action")
+    assert exc_info.value.status_code == 400
+
+
+def test_build_ledger_set_status_then_get_round_trips_through_loupeindex(test_index):
+    symbol = _by_qualified_name(test_index, "validate_email")
+
+    build_ledger_impl(test_index, "set_status", symbol_id=symbol.id, status="in_progress", note="working on it")
+    result = build_ledger_impl(test_index, "get", symbol_id=symbol.id)
+
+    assert len(result.entries) == 1
+    assert result.entries[0].status == "in_progress"
+    assert result.entries[0].note == "working on it"
+
+
+def test_build_ledger_list_with_no_entries_is_empty_not_an_error(tmp_path, real_model):
+    """A fresh project's ledger is correctly empty — opt-in tracking, no
+    auto-seeding (docs/target-project-build-ledger.md §1's explicit scope)."""
+    repo = tmp_path
+    for f in PHASE1_FILES:
+        shutil.copy(PHASE1_FIXTURES / f, repo / f)
+    import os
+
+    old_cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        parsed = {f: parse_file(f) for f in PHASE1_FILES}
+    finally:
+        os.chdir(old_cwd)
+    graph = build_graph(list(parsed.values()))
+    all_symbols = [s for pf in parsed.values() for s in pf.symbols]
+    empty_index = LoupeIndex(
+        repo_root=repo,
+        loupe_dir=repo / ".loupe",
+        parsed_files=parsed,
+        graph=graph,
+        lexical_index=LexicalIndex(all_symbols),
+        semantic_index=SemanticIndex(model=real_model),
+        file_cache=FileIndexCache(),
+    )
+    empty_index.semantic_index.index(all_symbols)
+
+    result = build_ledger_impl(empty_index, "list")
+    assert result.entries == []
 
 
 # --------------------------------------------------------------------------

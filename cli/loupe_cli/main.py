@@ -480,6 +480,46 @@ def _parsed_files_at_commit(repo, ref: str) -> list:
     return parsed
 
 
+def cmd_build_status(args: argparse.Namespace) -> int:
+    """`loupe build-status` — a plain-text summary of the target-project build
+    ledger (docs/target-project-build-ledger.md §6): counts by status, every
+    `STALE` entry named explicitly. The "governed tool surface for Claude,
+    ungoverned CLI report for a human" split already used for `loupe check`.
+    """
+    from loupe_core.ledger.build_ledger import BuildLedgerStore, LedgerStatus
+
+    repo_root = Path(args.path).resolve()
+    os.chdir(repo_root)
+    config = load_config(repo_root)
+    index = bootstrap(repo_root, config)
+    symbols_by_id = {s.id: s for s in index.symbols}
+
+    store = BuildLedgerStore(index.loupe_dir / "build" / "ledger.json")
+    entries = store.list(graph=index.graph.graph, symbols_by_id=symbols_by_id, pagerank_scores=index.graph.pagerank_scores)
+
+    if not entries:
+        print(f"Build ledger — {repo_root}\n\nNo tracked entries yet. Use the build_ledger MCP tool to start tracking a symbol.")
+        return 0
+
+    counts = {status: 0 for status in LedgerStatus}
+    for entry in entries:
+        counts[entry.status] += 1
+
+    print(f"Build ledger — {repo_root}\n")
+    for status in LedgerStatus:
+        print(f"{status.value}: {counts[status]}")
+
+    stale = [e for e in entries if e.status == LedgerStatus.STALE]
+    if stale:
+        print("\nStale entries (source changed since marked done, directly or via a dependency):")
+        for entry in stale:
+            symbol = symbols_by_id.get(entry.symbol_id)
+            label = symbol.qualified_name if symbol is not None else entry.symbol_id
+            print(f"  {label} ({entry.symbol_id})")
+
+    return 0
+
+
 def _enable_experimental_feature_in_manifest(manifest_path: Path, feature: str) -> None:
     """Read-modify-write `experimental.llm_assist` + `experimental.features.<feature>`
     into the manifest. Simplification worth being explicit about: this
@@ -593,6 +633,10 @@ def main(argv: list[str] | None = None) -> int:
     enable_experimental_parser.add_argument("feature", help="e.g. hyde_query_rewrite")
     enable_experimental_parser.add_argument("path", nargs="?", default=".")
     enable_experimental_parser.set_defaults(func=cmd_enable_experimental)
+
+    build_status_parser = subparsers.add_parser("build-status", help="summarize the target-project build ledger")
+    build_status_parser.add_argument("path", nargs="?", default=".")
+    build_status_parser.set_defaults(func=cmd_build_status)
 
     args = parser.parse_args(argv)
     return args.func(args)

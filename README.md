@@ -33,7 +33,7 @@ Every number below comes from Loupe's own evaluation harness, run against real r
 | Token cost vs. naive whole-file loading | **6.3× fewer tokens** (oracle condition, real repo) | `benchmarks/results/` |
 | Recall@5 / Recall@10 on real, git-mined tasks | **1.0 / 1.0** (7 real commits from Loupe's own history) | `benchmarks/results/` |
 | Fused retrieval (lexical + semantic + centrality) vs. either signal alone | fused **≥** best single signal, every adversarial query tested | `core/tests/test_fusion.py` |
-| Test suite | **480 tests passing** across 3 packages, real models — no mocked embeddings | `core/`, `mcp_server/`, `cli/` |
+| Test suite | **598 tests passing** across 4 packages, real models — no mocked embeddings | `core/`, `mcp_server/`, `cli/`, `scaffold/` |
 
 The evaluation harness also mines a project's *own* git history into benchmark tasks automatically (`loupe_core/eval/mine_history.py`) — every claim above is reproducible against any repo, including this one.
 
@@ -106,6 +106,7 @@ Loupe deliberately keeps its **tool** count small — every addition is weighed 
 | `find_code_smells` | 8 FastAPI-aware static checks (missing response models, N+1 queries, god objects, circular deps, …) |
 | `submit_feedback` | Conversational feedback on a retrieval, feeding the learned ranker |
 | `session_notes` | A scratchpad that survives compaction, decay-ranked and deduplicated |
+| `build_ledger` | Tracks build/implementation progress on the target project, with graph-derived dependencies and automatic staleness detection |
 
 | Resource | Purpose |
 |---|---|
@@ -150,6 +151,9 @@ That's it — `search_symbols`, `get_symbol`, and the rest are now available to 
 | `loupe update-churn` | Recompute git-churn ranking signal |
 | `loupe update-suggestions` | Mine co-retrieval suggestions from usage telemetry |
 | `loupe retrain` | Retrain the learned ranker from accumulated feedback |
+| `loupe enable-experimental <feature>` | Enable a gated, paid-LLM-backed feature after a cost-estimate confirmation |
+| `loupe build-status` | Summarize the target-project build ledger — counts by status, every stale entry named |
+| `loupe-new <dir>` | Scaffold a new FastAPI project via a composable brick system (separate `scaffold/` package) |
 
 ---
 
@@ -161,7 +165,7 @@ A monorepo, each package independently installable:
 core/         loupe_core         — framework-free: parsing, graph, retrieval, governor, evaluation
 mcp_server/   loupe_mcp_server   — FastAPI + MCP, exposes core over HTTP
 cli/          loupe_cli          — the `loupe` command
-scaffold/     loupe_scaffold     — `loupe new`: elicitation engine for scaffolding new FastAPI projects
+scaffold/     loupe_scaffold     — `loupe-new`: elicitation + composable-brick system for scaffolding new FastAPI projects
 lens/                            — React/Vite dashboard over Loupe's own local data
 ```
 
@@ -171,4 +175,4 @@ Every phase was built against a hand-written spec, then verified by dogfooding �
 
 ## Status
 
-The core roadmap (foundations → retrieval → governor → server → evaluation → self-improvement), all four original extensions (blast-radius analysis, test linkage, feedback loop, auto-derived conventions), Scaffold's elicitation engine, the Lens dashboard, and a second roadmap wave (retrieval precision upgrades, graph clustering, context engineering, adaptive context compression, and the zero-cost static analysis pack) are complete and tested. Compute-profile model tiers are partially wired; an experimental-feature gate (for future paid-API-backed features like HyDE query rewriting) is scoped but not yet built — deliberately: Loupe has made zero paid API calls anywhere in its own operation so far, and that's a line worth keeping deliberate about crossing.
+The core roadmap (foundations → retrieval → governor → server → evaluation → self-improvement), all four original extensions (blast-radius analysis, test linkage, feedback loop, auto-derived conventions), Scaffold's full brick/compose system, the Lens dashboard, and a second roadmap wave (retrieval precision upgrades, graph clustering, context engineering, adaptive context compression, the zero-cost static analysis pack, compute profiles, the experimental gate, HyDE, and the target-project build ledger) are all complete and tested — 500+ tests across `core`/`mcp_server`/`cli`/`scaffold`. HyDE's algorithm is real and wired into retrieval fusion, but no real LLM client is constructed anywhere in this project's own server startup: Loupe has made zero paid API calls anywhere in its own operation so far, and that's a line kept deliberate about crossing — wiring a real, credentialed client is left to whoever operates a server with it explicitly enabled.

@@ -604,6 +604,86 @@ def session_notes_impl(
     raise HTTPException(status_code=400, detail=f"unknown action: {action!r}")
 
 
+BUILD_LEDGER_FILENAME = "build/ledger.json"
+
+
+class BuildLedgerEntryResponse(BaseModel):
+    symbol_id: str
+    status: str
+    depends_on: list[str]
+    has_test: bool
+    content_hash_at_done: str | None
+    note: str | None
+    updated_at: float
+
+
+class BuildLedgerResponse(BaseModel):
+    entries: list[BuildLedgerEntryResponse]
+
+
+def _ledger_entry_to_response(entry) -> BuildLedgerEntryResponse:
+    return BuildLedgerEntryResponse(
+        symbol_id=entry.symbol_id,
+        status=entry.status.value,
+        depends_on=entry.depends_on,
+        has_test=entry.has_test,
+        content_hash_at_done=entry.content_hash_at_done,
+        note=entry.note,
+        updated_at=entry.updated_at,
+    )
+
+
+def build_ledger_impl(
+    index: LoupeIndex,
+    action: Literal["get", "set_status", "list"],
+    symbol_id: str | None = None,
+    status: Literal["planned", "in_progress", "done"] | None = None,
+    note: str | None = None,
+    filter_status: Literal["planned", "in_progress", "done", "stale"] | None = None,
+) -> BuildLedgerResponse:
+    """docs/target-project-build-ledger.md §6: one tool, three actions,
+    matching `session_notes`'s own precedent for "fundamentally one piece of
+    state, a few modes" rather than growing the tool-count budget for each.
+    `status` (a human write) never accepts `"stale"` — that status is only
+    ever reached automatically (§4); `filter_status` (a read) does, since
+    "what's gone stale" is exactly the question this tool exists to answer.
+    """
+    from loupe_core.ledger.build_ledger import BuildLedgerStore, LedgerStatus
+
+    store = BuildLedgerStore(index.loupe_dir / BUILD_LEDGER_FILENAME)
+    symbols_by_id = {s.id: s for s in index.symbols}
+
+    if action == "set_status":
+        if symbol_id is None or status is None:
+            raise HTTPException(status_code=400, detail="symbol_id and status are required for action='set_status'")
+        if index.symbol_by_id(symbol_id) is None:
+            raise HTTPException(status_code=404, detail=f"unknown symbol_id: {symbol_id!r}")
+        entry = store.set_status(
+            symbol_id, LedgerStatus(status), graph=index.graph.graph, symbols_by_id=symbols_by_id, note=note
+        )
+        return BuildLedgerResponse(entries=[_ledger_entry_to_response(entry)])
+
+    if action == "get":
+        if symbol_id is None:
+            raise HTTPException(status_code=400, detail="symbol_id is required for action='get'")
+        entry = store.get(
+            symbol_id, graph=index.graph.graph, symbols_by_id=symbols_by_id, pagerank_scores=index.graph.pagerank_scores
+        )
+        return BuildLedgerResponse(entries=[_ledger_entry_to_response(entry)] if entry is not None else [])
+
+    if action == "list":
+        status_filter = LedgerStatus(filter_status) if filter_status is not None else None
+        entries = store.list(
+            graph=index.graph.graph,
+            symbols_by_id=symbols_by_id,
+            pagerank_scores=index.graph.pagerank_scores,
+            filter_status=status_filter,
+        )
+        return BuildLedgerResponse(entries=[_ledger_entry_to_response(e) for e in entries])
+
+    raise HTTPException(status_code=400, detail=f"unknown action: {action!r}")
+
+
 def _denied_response(cost: int) -> DeniedResponse:
     if cost > HARD_CEILING:
         return DeniedResponse(
@@ -817,6 +897,22 @@ async def session_notes_route(
     session_id = session_id_from_request(request)
     store = session_notes_manager.get_or_create(session_id)
     return session_notes_impl(store, action, content=content, importance=importance, query=query, top_k=top_k, limit=limit)
+
+
+@router.get("/build_ledger", operation_id="build_ledger")
+@log_tool_call("build_ledger")
+async def build_ledger_route(
+    request: Request,
+    action: Literal["get", "set_status", "list"],
+    symbol_id: str | None = None,
+    status: Literal["planned", "in_progress", "done"] | None = None,
+    note: str | None = None,
+    filter_status: Literal["planned", "in_progress", "done", "stale"] | None = None,
+) -> BuildLedgerResponse:
+    index: LoupeIndex = request.app.state.index
+    return build_ledger_impl(
+        index, action, symbol_id=symbol_id, status=status, note=note, filter_status=filter_status
+    )
 
 
 @router.get("/find_code_smells", operation_id="find_code_smells")

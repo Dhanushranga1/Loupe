@@ -31,7 +31,7 @@ from .compute_profiles import resolve_embedding_dim, resolve_embedding_model
 from .config import INDEX_SCHEMA_VERSION, LoupeConfig
 from .ignore import is_path_ignored, load_loupeignore_patterns
 
-LOUPE_SUBDIRS = ["cache", "logs/retrieval", "logs/sessions", "logs/feedback", "eval", "context"]
+LOUPE_SUBDIRS = ["cache", "logs/retrieval", "logs/sessions", "logs/feedback", "eval", "context", "build"]
 
 
 @dataclass

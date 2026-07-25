@@ -454,3 +454,85 @@ def test_enable_experimental_rejects_unknown_feature_without_prompting(tmp_path,
 
     assert exit_code == 1
     assert "Unknown experimental feature" in capsys.readouterr().out
+
+
+def test_build_status_with_no_tracked_entries_reports_none(tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+    main(["index", str(repo)])
+
+    exit_code = main(["build-status", str(repo)])
+
+    assert exit_code == 0
+    assert "No tracked entries yet" in capsys.readouterr().out
+
+
+def test_build_status_reports_counts_by_status(tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+    main(["index", str(repo)])
+
+    from loupe_core.graph.builder import build_graph, parse_file
+    from loupe_core.ledger.build_ledger import BuildLedgerStore, LedgerStatus
+
+    import os
+
+    old_cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        parsed = [parse_file(f) for f in PHASE1_FILES]
+    finally:
+        os.chdir(old_cwd)
+    g = build_graph(parsed)
+    symbols_by_id = {s.id: s for pf in parsed for s in pf.symbols}
+    format_currency_id = next(s.id for s in symbols_by_id.values() if s.qualified_name == "format_currency")
+    validate_email_id = next(s.id for s in symbols_by_id.values() if s.qualified_name == "validate_email")
+
+    store = BuildLedgerStore(repo / ".loupe" / "build" / "ledger.json")
+    store.set_status(format_currency_id, LedgerStatus.DONE, graph=g.graph, symbols_by_id=symbols_by_id)
+    store.set_status(validate_email_id, LedgerStatus.PLANNED, graph=g.graph, symbols_by_id=symbols_by_id)
+
+    exit_code = main(["build-status", str(repo)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "done: 1" in output
+    assert "planned: 1" in output
+
+
+def test_build_status_names_stale_entries_explicitly(tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+    main(["index", str(repo)])
+
+    from loupe_core.graph.builder import build_graph, parse_file
+    from loupe_core.ledger.build_ledger import BuildLedgerStore, LedgerStatus
+
+    import os
+
+    old_cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        parsed = [parse_file(f) for f in PHASE1_FILES]
+    finally:
+        os.chdir(old_cwd)
+    g = build_graph(parsed)
+    symbols_by_id = {s.id: s for pf in parsed for s in pf.symbols}
+    format_currency_id = next(s.id for s in symbols_by_id.values() if s.qualified_name == "format_currency")
+
+    store = BuildLedgerStore(repo / ".loupe" / "build" / "ledger.json")
+    store.set_status(format_currency_id, LedgerStatus.DONE, graph=g.graph, symbols_by_id=symbols_by_id)
+
+    (repo / "utils.py").write_text(
+        'def format_currency(amount: float) -> str:\n'
+        '    """Changed."""\n'
+        '    return f"USD {amount:.2f}"\n\n\n'
+        'def validate_email(email: str) -> bool:\n'
+        '    return "@" in email and "." in email\n\n\n'
+        'def unused_utility() -> None:\n'
+        '    return None\n'
+    )
+
+    exit_code = main(["build-status", str(repo)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "stale: 1" in output
+    assert "format_currency" in output

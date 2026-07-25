@@ -117,6 +117,7 @@ def test_mcp_handshake_and_tools_list(client):
         "submit_feedback",
         "find_code_smells",
         "session_notes",
+        "build_ledger",
     }
 
 
@@ -250,11 +251,14 @@ def test_every_tool_call_produces_one_telemetry_line(client, mock_repo):
     )
     _mcp_tool_call(client, session_id, "find_code_smells", {}, request_id=8)
     _mcp_tool_call(client, session_id, "session_notes", {"action": "write", "content": "a note", "importance": 3}, request_id=9)
+    _mcp_tool_call(
+        client, session_id, "build_ledger", {"action": "set_status", "symbol_id": symbol_id, "status": "planned"}, request_id=10
+    )
 
     log_path = mock_repo / ".loupe" / "logs" / "retrieval" / f"{session_id}.jsonl"
     assert log_path.exists()
     lines = log_path.read_text().strip().splitlines()
-    assert len(lines) == 8
+    assert len(lines) == 9
 
     tool_names = set()
     for line in lines:
@@ -273,6 +277,7 @@ def test_every_tool_call_produces_one_telemetry_line(client, mock_repo):
         "submit_feedback",
         "find_code_smells",
         "session_notes",
+        "build_ledger",
     }
 
 
@@ -553,3 +558,88 @@ def test_session_notes_across_two_sessions_never_cross_contaminate(client):
 
     assert {n["content"] for n in a_notes["notes"]} == {"session A's note"}
     assert {n["content"] for n in b_notes["notes"]} == {"session B's note"}
+
+
+# --------------------------------------------------------------------------
+# build_ledger (docs/target-project-build-ledger.md) — one tool, three
+# actions. `client`/`mock_repo` are module-scoped (shared across every test
+# above), so the ledger's own on-disk state persists across this whole
+# file — each test below uses a symbol no earlier test has touched, rather
+# than asserting an exact global ledger contents set.
+# --------------------------------------------------------------------------
+
+
+def _symbol_id_by_qualified_name(client: TestClient, session_id: str, path_or_glob: str, qualified_name: str) -> str:
+    results = _mcp_tool_call(client, session_id, "list_symbols", {"path_or_glob": path_or_glob})
+    return next(s["symbol_id"] for s in results if s["qualified_name"] == qualified_name)
+
+
+def test_build_ledger_set_status_then_get_through_real_mcp_protocol(client):
+    session_id = _mcp_initialize(client)
+    symbol_id = _symbol_id_by_qualified_name(client, session_id, "utils.py", "validate_email")
+
+    set_result = _mcp_tool_call(
+        client, session_id, "build_ledger", {"action": "set_status", "symbol_id": symbol_id, "status": "in_progress"}
+    )
+    assert set_result["entries"][0]["symbol_id"] == symbol_id
+    assert set_result["entries"][0]["status"] == "in_progress"
+
+    get_result = _mcp_tool_call(client, session_id, "build_ledger", {"action": "get", "symbol_id": symbol_id})
+    assert get_result["entries"][0]["status"] == "in_progress"
+
+
+def test_build_ledger_get_on_an_untracked_symbol_returns_no_entries(client):
+    session_id = _mcp_initialize(client)
+    symbol_id = _symbol_id_by_qualified_name(client, session_id, "handlers.py", "dispatch")
+
+    result = _mcp_tool_call(client, session_id, "build_ledger", {"action": "get", "symbol_id": symbol_id})
+    assert result["entries"] == []
+
+
+def test_build_ledger_set_status_on_unknown_symbol_id_errors(client):
+    session_id = _mcp_initialize(client)
+    response = client.post(
+        "/mcp",
+        headers={"Accept": "application/json, text/event-stream", "Mcp-Session-Id": session_id},
+        json={
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "build_ledger",
+                "arguments": {"action": "set_status", "symbol_id": "not-a-real-symbol-id", "status": "done"},
+            },
+        },
+    )
+    body = response.json()
+    assert body["result"]["isError"] is True
+
+
+def test_build_ledger_set_status_auto_populates_depends_on_through_real_mcp_protocol(client):
+    """The real E1-fixture-equivalent chain from PHASE1_FIXTURES: Order.total calls
+    format_currency — proves the auto-population wiring end to end, not just the
+    pure function tested in core/tests/test_build_ledger.py."""
+    session_id = _mcp_initialize(client)
+    order_total_id = _symbol_id_by_qualified_name(client, session_id, "models.py", "Order.total")
+    format_currency_id = _symbol_id_by_qualified_name(client, session_id, "utils.py", "format_currency")
+
+    result = _mcp_tool_call(
+        client, session_id, "build_ledger", {"action": "set_status", "symbol_id": order_total_id, "status": "planned"}
+    )
+    assert result["entries"][0]["depends_on"] == [format_currency_id]
+
+
+def test_build_ledger_list_filters_by_status(client):
+    session_id = _mcp_initialize(client)
+    log_symbol_id = _symbol_id_by_qualified_name(client, session_id, "services.py", "OrderService.log")
+    create_order_id = _symbol_id_by_qualified_name(client, session_id, "services.py", "OrderService.create_order")
+
+    _mcp_tool_call(client, session_id, "build_ledger", {"action": "set_status", "symbol_id": log_symbol_id, "status": "done"})
+    _mcp_tool_call(
+        client, session_id, "build_ledger", {"action": "set_status", "symbol_id": create_order_id, "status": "planned"}
+    )
+
+    done_only = _mcp_tool_call(client, session_id, "build_ledger", {"action": "list", "filter_status": "done"})
+    done_ids = {e["symbol_id"] for e in done_only["entries"]}
+    assert log_symbol_id in done_ids
+    assert create_order_id not in done_ids
