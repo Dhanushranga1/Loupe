@@ -10,18 +10,37 @@ name = "loupe_scaffold"
 version = "0.1.0"
 description = "Loupe Scaffold: generates new FastAPI projects via a composable brick system (docs/loupe-scaffold.md)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "jinja2>=3.1",
+    "loupe_core",
+]
 # A sibling tool to Loupe, not a phase of it and not an MCP tool
-# (docs/loupe-scaffold.md's own framing) — deliberately zero dependency on
-# core/ or server/. loupe new is a one-time interactive CLI command, never
-# something Claude Code calls mid-session.
+# (docs/loupe-scaffold.md's own framing) — loupe new is a one-time
+# interactive CLI command, never something Claude Code calls mid-session.
+# `loupe_core` is now a real dependency, narrowly: the brick/compose system
+# needs `adapters/fastapi/convention_categories.py`, the shared taxonomy
+# docs/loupe-scaffold.md §1 says both E4 and Scaffold must import from the
+# same place — nothing else in loupe_core is pulled in for any other reason.
 
-# No [project.scripts] entry yet: docs/loupe-scaffold.md §6's build order
-# puts the elicitation engine first, on its own, before any CLI wiring or
-# the brick/compose system (which needs the FastAPI adapter's convention
-# taxonomy — doesn't exist in this repo yet). Add loupe-new once cli.py does.
+[project.scripts]
+loupe-new = "loupe_scaffold.cli:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pyyaml>=6.0",
+    # The generated-project end-to-end test (test_end_to_end.py) actually
+    # installs and imports a real generated FastAPI project's own stack —
+    # these are that generated project's runtime dependencies, needed here
+    # only for the test to prove they resolve and import correctly.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic-settings>=2.4",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "aiosqlite>=0.20",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
 ]

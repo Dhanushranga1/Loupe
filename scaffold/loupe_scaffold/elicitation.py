@@ -10,15 +10,13 @@ that looks answers up in a plain dict — the engine's own logic (which
 questions fire, in what order) is identical and independently testable
 either way.
 
-Explicitly NOT built yet, per docs/loupe-scaffold.md §6's stated order and
-the project's own sequencing decision (see docs/progress/README.md): the
-brick/compose system. It needs the FastAPI adapter's convention-category
-taxonomy (`core/loupe_core/adapters/fastapi/convention_categories.py`),
-which doesn't exist anywhere in this repo yet — building bricks against a
-taxonomy that isn't there would mean inventing one now and likely redoing
-it later. The elicitation engine has no such dependency (confirmed by
-docs/loupe-scaffold.md §1's own correction: only the brick/compose system
-needs the shared taxonomy), so it's what's safe to build standalone.
+Built standalone, ahead of the brick/compose system, per docs/loupe-scaffold.md
+§6's stated order: this module has no dependency on the FastAPI adapter's
+convention-category taxonomy (confirmed by §1's own correction — only the
+brick/compose system needs it), so it was safe to get fully right on its
+own first. The brick/compose system itself now lives in `compose.py`/
+`bricks.py`/`generate.py`, built once
+`core/loupe_core/adapters/fastapi/convention_categories.py` existed.
 """
 
 from __future__ import annotations
