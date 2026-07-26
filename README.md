@@ -33,7 +33,7 @@ Every number below comes from Loupe's own evaluation harness, run against real r
 | Token cost vs. naive whole-file loading | **6.3× fewer tokens** (oracle condition, real repo) | `benchmarks/results/` |
 | Recall@5 / Recall@10 on real, git-mined tasks | **1.0 / 1.0** (7 real commits from Loupe's own history) | `benchmarks/results/` |
 | Fused retrieval (lexical + semantic + centrality) vs. either signal alone | fused **≥** best single signal, every adversarial query tested | `core/tests/test_fusion.py` |
-| Test suite | **598 tests passing** across 4 packages, real models — no mocked embeddings | `core/`, `mcp_server/`, `cli/`, `scaffold/` |
+| Test suite | **614 tests passing** across 4 packages, real models — no mocked embeddings | `core/`, `mcp_server/`, `cli/`, `scaffold/` |
 
 The evaluation harness also mines a project's *own* git history into benchmark tasks automatically (`loupe_core/eval/mine_history.py`) — every claim above is reproducible against any repo, including this one.
 
@@ -98,9 +98,9 @@ Loupe deliberately keeps its **tool** count small — every addition is weighed 
 
 | Tool | Purpose |
 |---|---|
-| `list_symbols` | Glob/kind-filtered symbol listing, with scope and file-summary granularity |
+| `list_symbols` | Glob/kind/name-filtered symbol listing, with scope, file-summary granularity, and a compact/signature-only detail mode for cheaper structural lookups |
 | `search_symbols` | The full hybrid retrieval pipeline |
-| `get_symbol` | Full source extraction, governed by the token budget, with class-context decomposition for large symbols |
+| `get_symbol` | Full source extraction, governed by the token budget, with class-context decomposition for large symbols and batch lookup for several known ids in one call |
 | `expand_dependencies` | Bounded graph traversal (callers/callees/both) |
 | `analyze_impact` | Blast-radius analysis: what breaks if this changes |
 | `find_code_smells` | 8 FastAPI-aware static checks (missing response models, N+1 queries, god objects, circular deps, …) |

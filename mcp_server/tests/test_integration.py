@@ -643,3 +643,84 @@ def test_build_ledger_list_filters_by_status(client):
     done_ids = {e["symbol_id"] for e in done_only["entries"]}
     assert log_symbol_id in done_ids
     assert create_order_id not in done_ids
+
+
+# --------------------------------------------------------------------------
+# Token-efficiency fixes (docs/PhaseX/retrieval-token-efficiency-fixes.md) —
+# verified through the real HTTP/MCP protocol path, not just the *_impl
+# layer, since Fix 1 and Fix 5 are specifically about what actually goes
+# over the wire and what Claude actually sees in tools/list.
+# --------------------------------------------------------------------------
+
+
+def test_list_symbols_response_omits_null_score_field_over_real_http(client):
+    """Fix 1: list_symbols never sets score -- the field must be genuinely
+    absent from the wire JSON, not just null, once response_model_exclude_none
+    is wired in."""
+    response = client.get("/list_symbols", params={"path_or_glob": "utils.py"})
+    assert response.status_code == 200
+    for entry in response.json():
+        assert "score" not in entry
+
+
+def test_search_symbols_response_still_includes_score_when_actually_set(client):
+    """Fix 1 must not strip a *real* score -- exclude_none only omits fields
+    that are genuinely None, and search_symbols always sets a real one."""
+    response = client.get("/search_symbols", params={"query": "validate an email address", "top_k": 3})
+    assert response.status_code == 200
+    for entry in response.json():
+        assert "score" in entry
+        assert entry["score"] is not None
+
+
+def test_list_symbols_name_filter_through_real_mcp_protocol(client):
+    session_id = _mcp_initialize(client)
+    result = _mcp_tool_call(client, session_id, "list_symbols", {"path_or_glob": "*.py", "name_filter": "format"})
+    assert {s["qualified_name"] for s in result} == {"format_currency"}
+
+
+def test_list_symbols_detail_compact_through_real_mcp_protocol(client):
+    session_id = _mcp_initialize(client)
+    result = _mcp_tool_call(client, session_id, "list_symbols", {"path_or_glob": "utils.py", "detail": "compact"})
+    assert result[0]["file_path"] == "utils.py"
+    assert {s["name"] for s in result[0]["symbols"]} == {"format_currency", "validate_email"}
+
+
+def test_get_symbol_batch_through_real_mcp_protocol(client):
+    session_id = _mcp_initialize(client)
+    format_currency_id = _symbol_id_by_qualified_name(client, session_id, "utils.py", "format_currency")
+    validate_email_id = _symbol_id_by_qualified_name(client, session_id, "utils.py", "validate_email")
+
+    result = _mcp_tool_call(
+        client, session_id, "get_symbol", {"symbol_ids": f"{format_currency_id},{validate_email_id}"}
+    )
+    assert len(result) == 2
+    assert {r["symbol_id"] for r in result} == {format_currency_id, validate_email_id}
+
+
+def test_get_symbol_single_id_still_returns_a_single_object_not_a_list(client):
+    """Fix 5's own compatibility guarantee: symbol_id alone must not change
+    shape for any existing caller."""
+    session_id = _mcp_initialize(client)
+    format_currency_id = _symbol_id_by_qualified_name(client, session_id, "utils.py", "format_currency")
+
+    result = _mcp_tool_call(client, session_id, "get_symbol", {"symbol_id": format_currency_id})
+    assert isinstance(result, dict)
+    assert result["symbol_id"] == format_currency_id
+
+
+def test_tool_descriptions_name_the_cheaper_options(client):
+    """Fix 5: guidance must be visible in the real tools/list MCP response,
+    not just present in the Python source."""
+    session_id = _mcp_initialize(client)
+    response = client.post(
+        "/mcp",
+        headers={"Accept": "application/json, text/event-stream", "Mcp-Session-Id": session_id},
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    tools_by_name = {t["name"]: t for t in response.json()["result"]["tools"]}
+
+    assert "name_filter" in tools_by_name["list_symbols"]["description"]
+    assert "detail" in tools_by_name["list_symbols"]["description"]
+    assert "list_symbols" in tools_by_name["search_symbols"]["description"]
+    assert "symbol_ids" in tools_by_name["get_symbol"]["description"]

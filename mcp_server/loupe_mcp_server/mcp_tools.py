@@ -113,6 +113,41 @@ def _to_file_summaries(symbols: list[Symbol]) -> list[FileSummary]:
     ]
 
 
+class CompactSymbol(BaseModel):
+    """docs/PhaseX/retrieval-token-efficiency-fixes.md Fix 4: short keys, no
+    docstring, no per-entry `file_path` (grouped once under `CompactFileGroup`
+    instead) — the single biggest lever the audit found, since `file_path`
+    repeated on every one of N symbols in a `list_symbols` call is pure
+    redundancy the caller's own `path_or_glob` already established."""
+
+    id: str
+    name: str
+    kind: str
+    sig: str
+    lines: list[int]  # [line_start, line_end]
+
+
+class CompactFileGroup(BaseModel):
+    file_path: str
+    symbols: list[CompactSymbol]
+
+
+def _to_compact_file_groups(symbols: list[Symbol]) -> list[CompactFileGroup]:
+    by_file: dict[str, list[Symbol]] = {}
+    for s in symbols:
+        by_file.setdefault(s.file_path, []).append(s)
+    return [
+        CompactFileGroup(
+            file_path=file_path,
+            symbols=[
+                CompactSymbol(id=s.id, name=s.qualified_name, kind=s.kind.value, sig=s.signature, lines=[s.line_start, s.line_end])
+                for s in syms
+            ],
+        )
+        for file_path, syms in sorted(by_file.items())
+    ]
+
+
 class GetSymbolResponse(BaseModel):
     symbol_id: str
     source: str
@@ -196,12 +231,23 @@ def list_symbols_impl(
     path_or_glob: str,
     kind_filter: list[str] | None = None,
     granularity: Literal["symbol", "file_summary"] = "symbol",
+    name_filter: str | None = None,
+    detail: Literal["full", "signature", "compact"] = "full",
     scope_path: str | None = None,
     scope_symbol_id: str | None = None,
-) -> list[SymbolSummary] | list[FileSummary]:
+) -> list[SymbolSummary] | list[FileSummary] | list[CompactFileGroup]:
     matches = [s for s in index.symbols if fnmatch.fnmatch(s.file_path, path_or_glob)]
     if kind_filter:
         matches = [s for s in matches if s.kind.value in kind_filter]
+
+    # docs/PhaseX/retrieval-token-efficiency-fixes.md Fix 2: a real gap found
+    # by dogfooding — the single most common actual need ("I know the name(s)
+    # I want") had no direct path except "list everything in this file, then
+    # filter client-side." Case-insensitive substring, not exact match, so a
+    # caller who half-remembers a name still finds it.
+    if name_filter:
+        needle = name_filter.lower()
+        matches = [s for s in matches if needle in s.qualified_name.lower()]
 
     # scope-aware-retrieval §3's hard/soft distinction is a *ranking* concept —
     # list_symbols has no relevance ranking to soften, it's a plain glob
@@ -224,7 +270,25 @@ def list_symbols_impl(
     if granularity == "file_summary":
         return _to_file_summaries(matches)
 
-    return [_to_summary(s) for s in _sorted_by_file_and_byte(matches)]
+    sorted_matches = _sorted_by_file_and_byte(matches)
+
+    # Fix 4 — the biggest lever the audit found (43% of a real 44-symbol
+    # call's cost): short keys, and file_path grouped once instead of
+    # repeated per entry, since a list_symbols call is already almost always
+    # scoped to one file or a narrow glob.
+    if detail == "compact":
+        return _to_compact_file_groups(sorted_matches)
+
+    summaries = [_to_summary(s) for s in sorted_matches]
+
+    # Fix 3 — docstrings were a real but smaller cost (17%) than the
+    # response shape itself. `model_copy` rather than mutating `_to_summary`'s
+    # output in place, since that helper is shared by every other tool here
+    # and none of them should have their docstring silently stripped.
+    if detail == "signature":
+        summaries = [s.model_copy(update={"docstring": None}) for s in summaries]
+
+    return summaries
 
 
 CHURN_CACHE_FILENAME = "cache/churn.json"
@@ -773,29 +837,74 @@ def get_symbol_impl(
     )
 
 
+def get_symbols_impl(
+    index: LoupeIndex,
+    session_manager: SessionManager,
+    session_id: str,
+    symbol_ids: list[str],
+    full: bool = False,
+) -> list[GetSymbolResponse | SymbolDecomposition | DeniedResponse]:
+    """Batch form of `get_symbol_impl` (docs/PhaseX/retrieval-token-efficiency-fixes.md
+    Fix 5): one MCP round trip for N already-known `symbol_id`s instead of N —
+    reuses `get_symbol_impl`'s own governed logic unchanged, once per id, so
+    session-budget charging and residency tracking behave exactly as N
+    sequential single calls would.
+
+    Validates every id exists *before* processing any of them, so a bad id
+    fails the whole call the same way a single `get_symbol(symbol_id=bad_id)`
+    would — not partway through, after some symbols have already been
+    charged against the session's token budget.
+    """
+    for symbol_id in symbol_ids:
+        if index.symbol_by_id(symbol_id) is None:
+            raise HTTPException(status_code=404, detail=f"unknown symbol_id: {symbol_id!r}")
+
+    return [get_symbol_impl(index, session_manager, session_id, sid, full=full) for sid in symbol_ids]
+
+
 # --------------------------------------------------------------------------
 # Thin HTTP wrappers — pull shared state from app.state, delegate to *_impl.
 # --------------------------------------------------------------------------
 
 
-@router.get("/list_symbols", operation_id="list_symbols")
+@router.get("/list_symbols", operation_id="list_symbols", response_model_exclude_none=True)
 @log_tool_call("list_symbols")
 async def list_symbols_route(
     request: Request,
     path_or_glob: str,
     kind_filter: str | None = None,
     granularity: Literal["symbol", "file_summary"] = "symbol",
+    name_filter: str | None = None,
+    detail: Literal["full", "signature", "compact"] = "full",
     scope_path: str | None = None,
     scope_symbol_id: str | None = None,
-) -> list[SymbolSummary] | list[FileSummary]:
+) -> list[SymbolSummary] | list[FileSummary] | list[CompactFileGroup]:
+    """List symbols matching a glob/kind filter. `detail="full"` (the
+    default) returns every field including full docstrings, which gets
+    expensive fast on a large file — for a quick structural check without
+    paying for docstrings, pass `detail="signature"`; for the cheapest
+    possible listing (short keys, no per-entry file path), pass
+    `detail="compact"`. If you already know the name (or part of it) of
+    what you're looking for, pass `name_filter` instead of listing
+    everything and searching the results yourself. For fuzzy/semantic
+    lookup by description rather than an exact/partial name, use
+    `search_symbols` instead.
+    """
     index: LoupeIndex = request.app.state.index
     kinds = kind_filter.split(",") if kind_filter else None
     return list_symbols_impl(
-        index, path_or_glob, kind_filter=kinds, granularity=granularity, scope_path=scope_path, scope_symbol_id=scope_symbol_id
+        index,
+        path_or_glob,
+        kind_filter=kinds,
+        granularity=granularity,
+        name_filter=name_filter,
+        detail=detail,
+        scope_path=scope_path,
+        scope_symbol_id=scope_symbol_id,
     )
 
 
-@router.get("/search_symbols", operation_id="search_symbols")
+@router.get("/search_symbols", operation_id="search_symbols", response_model_exclude_none=True)
 @log_tool_call("search_symbols")
 async def search_symbols_route(
     request: Request,
@@ -805,6 +914,12 @@ async def search_symbols_route(
     scope_symbol_id: str | None = None,
     scope_mode: Literal["hard", "soft"] = "soft",
 ) -> list[SymbolSummary]:
+    """The full hybrid retrieval pipeline: fuzzy/semantic lookup by
+    description or intent, ranked by relevance. If you already know the
+    exact (or partial) name of what you want and roughly which file it's
+    in, `list_symbols(path_or_glob=..., name_filter=...)` is cheaper and
+    more precise than a semantic query for that case.
+    """
     index: LoupeIndex = request.app.state.index
     # `hyde_llm_client` is never set in this project's own `main.py` startup
     # (see `search_symbols_impl`'s docstring) — `getattr(..., None)` means
@@ -824,18 +939,35 @@ async def search_symbols_route(
     )
 
 
-@router.get("/get_symbol", operation_id="get_symbol")
+@router.get("/get_symbol", operation_id="get_symbol", response_model_exclude_none=True)
 @log_tool_call("get_symbol")
 async def get_symbol_route(
-    request: Request, symbol_id: str, full: bool = False
-) -> GetSymbolResponse | SymbolDecomposition | DeniedResponse:
+    request: Request, symbol_id: str | None = None, symbol_ids: str | None = None, full: bool = False
+) -> (
+    GetSymbolResponse
+    | SymbolDecomposition
+    | DeniedResponse
+    | list[GetSymbolResponse | SymbolDecomposition | DeniedResponse]
+):
+    """Full governed source extraction for a symbol. If you already know
+    several symbol_ids you want (e.g. from a prior list_symbols/search_symbols
+    call), pass them all at once via `symbol_ids` (comma-separated) instead
+    of calling this once per id — one round trip instead of N. Exactly one
+    of `symbol_id`/`symbol_ids` is required; `symbol_id` alone keeps
+    returning today's single-response shape, not a one-element list.
+    """
     index: LoupeIndex = request.app.state.index
     session_manager: SessionManager = request.app.state.session_manager
     session_id = session_id_from_request(request)
+    if symbol_ids is not None:
+        ids = symbol_ids.split(",")
+        return get_symbols_impl(index, session_manager, session_id, ids, full=full)
+    if symbol_id is None:
+        raise HTTPException(status_code=400, detail="symbol_id or symbol_ids is required")
     return get_symbol_impl(index, session_manager, session_id, symbol_id, full=full)
 
 
-@router.get("/expand_dependencies", operation_id="expand_dependencies")
+@router.get("/expand_dependencies", operation_id="expand_dependencies", response_model_exclude_none=True)
 @log_tool_call("expand_dependencies")
 async def expand_dependencies_route(
     request: Request,
@@ -862,7 +994,7 @@ async def expand_dependencies_route(
     )
 
 
-@router.get("/analyze_impact", operation_id="analyze_impact")
+@router.get("/analyze_impact", operation_id="analyze_impact", response_model_exclude_none=True)
 @log_tool_call("analyze_impact")
 async def analyze_impact_route(
     request: Request, symbol_id: str, depth: int = 2, max_affected: int = DEFAULT_MAX_AFFECTED

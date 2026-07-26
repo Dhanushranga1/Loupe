@@ -5,6 +5,7 @@ per phase-4-systems.md §10's stated task order: get the request/response
 contracts and governor wiring right in isolation first.
 """
 
+import json
 import shutil
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from loupe_mcp_server.mcp_tools import (
     expand_dependencies_impl,
     find_code_smells_impl,
     get_symbol_impl,
+    get_symbols_impl,
     list_symbols_impl,
     sanitize_source,
     search_symbols_impl,
@@ -255,6 +257,73 @@ def test_list_symbols_file_summary_granularity_one_entry_per_matching_file(test_
     all_files = {s.file_path for s in test_index.symbols}
     assert file_paths == all_files
     assert len(results) == len(all_files), "one entry per file, not per symbol"
+
+
+# --------------------------------------------------------------------------
+# list_symbols efficiency params (docs/PhaseX/retrieval-token-efficiency-fixes.md
+# Fixes 2-4) — real gaps found by dogfooding Loupe on itself.
+# --------------------------------------------------------------------------
+
+
+def test_list_symbols_name_filter_matches_substring_case_insensitively(test_index):
+    results = list_symbols_impl(test_index, "*.py", name_filter="FORMAT")
+    names = {s.qualified_name for s in results}
+    assert names == {"format_currency"}
+
+
+def test_list_symbols_name_filter_with_no_match_returns_empty_not_an_error(test_index):
+    results = list_symbols_impl(test_index, "*.py", name_filter="nonexistent_symbol_xyz")
+    assert results == []
+
+
+def test_list_symbols_default_detail_is_unchanged_full_behavior(test_index):
+    results = list_symbols_impl(test_index, "utils.py")
+    format_currency = next(s for s in results if s.qualified_name == "format_currency")
+    assert format_currency.docstring is not None, "default detail must still include docstrings"
+
+
+def test_list_symbols_detail_signature_omits_docstring(test_index):
+    full = list_symbols_impl(test_index, "utils.py", detail="full")
+    signature_only = list_symbols_impl(test_index, "utils.py", detail="signature")
+
+    assert any(s.docstring for s in full), "sanity check: this fixture's symbols really do have docstrings"
+    assert all(s.docstring is None for s in signature_only)
+    # everything else about the symbol is preserved -- only docstring is dropped
+    assert [s.qualified_name for s in signature_only] == [s.qualified_name for s in full]
+    assert [s.signature for s in signature_only] == [s.signature for s in full]
+
+
+def test_list_symbols_detail_compact_groups_by_file_with_short_keys(test_index):
+    results = list_symbols_impl(test_index, "utils.py", detail="compact")
+
+    assert len(results) == 1
+    assert results[0].file_path == "utils.py"
+    names = {s.name for s in results[0].symbols}
+    assert names == {"format_currency", "validate_email"}
+    entry = next(s for s in results[0].symbols if s.name == "format_currency")
+    assert entry.kind == "function"
+    assert entry.sig
+    assert entry.lines[0] <= entry.lines[1]
+
+
+def test_list_symbols_detail_compact_uses_fewer_tokens_than_full_for_the_same_query(test_index):
+    """docs/PhaseX/retrieval-token-efficiency-fixes.md §7's own acceptance
+    criterion: a real token-count comparison, not just a shape check --
+    token efficiency is the entire point of this fix."""
+    import tiktoken
+
+    enc = tiktoken.get_encoding("cl100k_base")
+
+    full = list_symbols_impl(test_index, "*.py")
+    compact = list_symbols_impl(test_index, "*.py", detail="compact")
+
+    full_tokens = len(enc.encode(json.dumps([s.model_dump() for s in full])))
+    compact_tokens = len(enc.encode(json.dumps([g.model_dump() for g in compact])))
+
+    assert compact_tokens < full_tokens
+    # not just marginally cheaper -- this must be a real, substantial saving,
+    # matching the ~43% the original audit measured, not a token or two
+    assert compact_tokens < full_tokens * 0.7
 
 
 # --------------------------------------------------------------------------
@@ -702,6 +771,62 @@ def test_get_symbol_denied_when_extraction_cost_exceeds_hard_ceiling(test_index,
 
     assert isinstance(result, DeniedResponse)
     assert result.reason == "exceeds_hard_ceiling"
+
+
+# --------------------------------------------------------------------------
+# get_symbols_impl — batch form (docs/PhaseX/retrieval-token-efficiency-fixes.md
+# Fix 5): one round trip for N already-known symbol_ids instead of N.
+# --------------------------------------------------------------------------
+
+
+def test_get_symbols_impl_returns_one_entry_per_requested_id(test_index):
+    session_manager = SessionManager()
+    format_currency = _by_qualified_name(test_index, "format_currency")
+    validate_email = _by_qualified_name(test_index, "validate_email")
+
+    results = get_symbols_impl(
+        test_index, session_manager, "sess-1", [format_currency.id, validate_email.id]
+    )
+
+    assert len(results) == 2
+    assert all(isinstance(r, GetSymbolResponse) for r in results)
+    assert {r.symbol_id for r in results} == {format_currency.id, validate_email.id}
+
+
+def test_get_symbols_impl_behaves_identically_to_sequential_single_calls(test_index):
+    """Reuses get_symbol_impl's own governed logic per id -- residency tracking
+    across the batch must match what N sequential single calls would produce."""
+    session_manager = SessionManager()
+    format_currency = _by_qualified_name(test_index, "format_currency")
+    validate_email = _by_qualified_name(test_index, "validate_email")
+
+    first_batch = get_symbols_impl(
+        test_index, session_manager, "sess-1", [format_currency.id, validate_email.id]
+    )
+    assert all(r.already_resident is False for r in first_batch), "first time seeing either symbol this session"
+
+    second_batch = get_symbols_impl(
+        test_index, session_manager, "sess-1", [format_currency.id, validate_email.id]
+    )
+    assert all(r.already_resident is True for r in second_batch)
+
+
+def test_get_symbols_impl_unknown_id_fails_the_whole_call_before_charging_any(test_index):
+    """Resolved design decision (docs/PhaseX/retrieval-token-efficiency-fixes.md
+    Fix 5): a bad id fails the whole batch, matching single-get_symbol's own
+    404 behavior -- and validates every id *before* processing any of them,
+    so the good ids in the same batch are never charged against the session's
+    budget just because they happened to be requested alongside a bad one."""
+    session_manager = SessionManager()
+    format_currency = _by_qualified_name(test_index, "format_currency")
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_symbols_impl(test_index, session_manager, "sess-1", [format_currency.id, "0" * 16])
+    assert exc_info.value.status_code == 404
+
+    # format_currency must not have been charged/marked resident by the failed batch
+    result = get_symbol_impl(test_index, session_manager, "sess-1", format_currency.id)
+    assert result.already_resident is False
 
 
 def test_get_symbol_denied_when_budget_exhausted_evicts_first(test_index, monkeypatch):
