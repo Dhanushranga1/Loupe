@@ -235,7 +235,9 @@ def list_symbols_impl(
     detail: Literal["full", "signature", "compact"] = "full",
     scope_path: str | None = None,
     scope_symbol_id: str | None = None,
-) -> list[SymbolSummary] | list[FileSummary] | list[CompactFileGroup]:
+    session_manager: SessionManager | None = None,
+    session_id: str | None = None,
+) -> list[SymbolSummary] | list[FileSummary] | list[CompactFileGroup] | DeniedResponse:
     matches = [s for s in index.symbols if fnmatch.fnmatch(s.file_path, path_or_glob)]
     if kind_filter:
         matches = [s for s in matches if s.kind.value in kind_filter]
@@ -287,6 +289,23 @@ def list_symbols_impl(
     # and none of them should have their docstring silently stripped.
     if detail == "signature":
         summaries = [s.model_copy(update={"docstring": None}) for s in summaries]
+
+    # Fix 7 (docs/PhaseX/retrieval-token-efficiency-fixes.md §9, step doc
+    # steps/02-list-symbols-governor.md): only the expensive `detail="full"`
+    # default is gated — `signature`/`compact` are already the cheap path
+    # and must always stay available as the way out of a denial. Deliberately
+    # NOT `request_symbols`/knapsack/eviction (that machinery means "keep
+    # this symbol resident," which a listing isn't asking for) — a plain
+    # charge-or-deny against the same session.token_used pool get_symbol uses.
+    if detail == "full" and session_manager is not None and session_id is not None:
+        import json
+
+        session = session_manager.get_or_create(session_id)
+        cost = estimate_tokens(json.dumps([s.model_dump(exclude_none=True) for s in summaries]))
+        remaining = session.token_budget_total - session.token_used
+        if cost > HARD_CEILING or cost > remaining:
+            return _denied_list_symbols_response(cost)
+        session.token_used += cost
 
     return summaries
 
@@ -761,6 +780,22 @@ def _denied_response(cost: int) -> DeniedResponse:
     )
 
 
+def _denied_list_symbols_response(cost: int) -> DeniedResponse:
+    """Fix 7's own denial text (distinct from `_denied_response`'s
+    get_symbol-flavored suggestion) — points at the two escape hatches that
+    are *never* denied: `name_filter` to narrow the glob, or a cheaper
+    `detail` value. Named the actual estimated cost so the suggestion is
+    concrete, not generic.
+    """
+    suggestion = (
+        f"this listing would cost ~{cost} tokens, too much for the remaining session budget. "
+        "Narrow it with name_filter, or pass detail=\"compact\" (cheapest) or detail=\"signature\" instead."
+    )
+    if cost > HARD_CEILING:
+        return DeniedResponse(reason="exceeds_hard_ceiling", suggestion=suggestion)
+    return DeniedResponse(reason="session_budget_exhausted", suggestion=suggestion)
+
+
 def get_symbol_impl(
     index: LoupeIndex,
     session_manager: SessionManager,
@@ -878,7 +913,7 @@ async def list_symbols_route(
     detail: Literal["full", "signature", "compact"] = "full",
     scope_path: str | None = None,
     scope_symbol_id: str | None = None,
-) -> list[SymbolSummary] | list[FileSummary] | list[CompactFileGroup]:
+) -> list[SymbolSummary] | list[FileSummary] | list[CompactFileGroup] | DeniedResponse:
     """List symbols matching a glob/kind filter. `detail="full"` (the
     default) returns every field including full docstrings, which gets
     expensive fast on a large file — for a quick structural check without
@@ -888,9 +923,13 @@ async def list_symbols_route(
     what you're looking for, pass `name_filter` instead of listing
     everything and searching the results yourself. For fuzzy/semantic
     lookup by description rather than an exact/partial name, use
-    `search_symbols` instead.
+    `search_symbols` instead. A `detail="full"` listing large enough to
+    threaten the session's token budget is denied rather than silently
+    charged — `detail="compact"`/`"signature"` are never denied.
     """
     index: LoupeIndex = request.app.state.index
+    session_manager: SessionManager = request.app.state.session_manager
+    session_id = session_id_from_request(request)
     kinds = kind_filter.split(",") if kind_filter else None
     return list_symbols_impl(
         index,
@@ -901,6 +940,8 @@ async def list_symbols_route(
         detail=detail,
         scope_path=scope_path,
         scope_symbol_id=scope_symbol_id,
+        session_manager=session_manager,
+        session_id=session_id,
     )
 
 

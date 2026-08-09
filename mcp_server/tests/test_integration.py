@@ -686,6 +686,30 @@ def test_list_symbols_detail_compact_through_real_mcp_protocol(client):
     assert {s["name"] for s in result[0]["symbols"]} == {"format_currency", "validate_email"}
 
 
+def test_list_symbols_full_detail_denied_through_real_mcp_protocol_when_oversized(client, monkeypatch):
+    """Fix 7 (docs/PhaseX/retrieval-token-efficiency-fixes.md §9,
+    docs/progress/token-efficiency/steps/02-list-symbols-governor.md), wired
+    through the real HTTP/MCP path -- forces estimate_tokens artificially
+    high so a real detail="full" listing gets denied, and confirms
+    detail="compact" through the same session still succeeds (the escape
+    hatch is real, not just documented)."""
+    import loupe_mcp_server.mcp_tools as mcp_tools_module
+    from loupe_core.governor.session import HARD_CEILING
+
+    monkeypatch.setattr(mcp_tools_module, "estimate_tokens", lambda _text: HARD_CEILING + 1)
+
+    session_id = _mcp_initialize(client)
+    denied = _mcp_tool_call(client, session_id, "list_symbols", {"path_or_glob": "*.py", "detail": "full"})
+    assert denied["status"] == "denied"
+    assert denied["reason"] == "exceeds_hard_ceiling"
+    assert "name_filter" in denied["suggestion"]
+
+    compact = _mcp_tool_call(
+        client, session_id, "list_symbols", {"path_or_glob": "utils.py", "detail": "compact"}, request_id=3
+    )
+    assert compact[0]["file_path"] == "utils.py"
+
+
 def test_get_symbol_batch_through_real_mcp_protocol(client):
     session_id = _mcp_initialize(client)
     format_currency_id = _symbol_id_by_qualified_name(client, session_id, "utils.py", "format_currency")

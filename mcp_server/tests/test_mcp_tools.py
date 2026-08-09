@@ -327,6 +327,77 @@ def test_list_symbols_detail_compact_uses_fewer_tokens_than_full_for_the_same_qu
 
 
 # --------------------------------------------------------------------------
+# list_symbols joining the session token budget (Fix 7,
+# docs/PhaseX/retrieval-token-efficiency-fixes.md §9,
+# docs/progress/token-efficiency/steps/02-list-symbols-governor.md)
+# --------------------------------------------------------------------------
+
+
+def test_list_symbols_without_session_manager_is_unaffected(test_index):
+    """No `session_manager` given -- byte-identical to pre-Fix-7 behavior,
+    the backward-compatibility guarantee every other list_symbols test above
+    already relies on."""
+    results = list_symbols_impl(test_index, "*.py")
+    assert not isinstance(results, DeniedResponse)
+    assert len(results) > 0
+
+
+def test_list_symbols_full_detail_denied_when_it_would_exceed_a_tiny_budget(test_index):
+    """The session must exist with the tiny budget *before* list_symbols_impl
+    is called -- get_or_create only honors token_budget_total on first
+    creation, matching SessionManager's own documented contract."""
+    session_manager = SessionManager()
+    session_manager.get_or_create("tiny", token_budget_total=1)
+
+    result = list_symbols_impl(
+        test_index, "*.py", detail="full", session_manager=session_manager, session_id="tiny"
+    )
+    assert isinstance(result, DeniedResponse)
+    assert result.reason == "session_budget_exhausted"
+    assert "name_filter" in result.suggestion
+    assert "compact" in result.suggestion
+
+
+def test_list_symbols_compact_and_signature_are_never_denied_even_over_budget(test_index):
+    session_manager = SessionManager()
+    session_manager.get_or_create("tiny", token_budget_total=1)
+
+    compact = list_symbols_impl(
+        test_index, "*.py", detail="compact", session_manager=session_manager, session_id="tiny"
+    )
+    signature = list_symbols_impl(
+        test_index, "*.py", detail="signature", session_manager=session_manager, session_id="tiny"
+    )
+    assert not isinstance(compact, DeniedResponse)
+    assert not isinstance(signature, DeniedResponse)
+    assert len(compact) > 0
+    assert len(signature) > 0
+
+
+def test_list_symbols_full_detail_that_fits_charges_the_session_budget(test_index):
+    session_manager = SessionManager()
+    session = session_manager.get_or_create("charged")
+    assert session.token_used == 0
+
+    results = list_symbols_impl(
+        test_index, "utils.py", detail="full", session_manager=session_manager, session_id="charged"
+    )
+    assert not isinstance(results, DeniedResponse)
+    assert session.token_used > 0
+
+    import json as _json
+
+    import tiktoken as _tiktoken
+
+    enc = _tiktoken.get_encoding("cl100k_base")
+    expected_cost = len(enc.encode(_json.dumps([s.model_dump(exclude_none=True) for s in results])))
+    # estimate_tokens applies a 1.1x safety margin -- charged cost must be at
+    # least the raw encoding, and in the same ballpark, not some unrelated number
+    assert session.token_used >= expected_cost
+    assert session.token_used < expected_cost * 1.5
+
+
+# --------------------------------------------------------------------------
 # search_symbols
 # --------------------------------------------------------------------------
 
