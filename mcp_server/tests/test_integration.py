@@ -303,6 +303,30 @@ def test_search_symbols_telemetry_logs_cross_encoder_latency_other_tools_dont(cl
     assert by_tool["get_symbol"]["cross_encoder_latency_ms"] is None
 
 
+def test_cross_encoder_latency_does_not_leak_from_a_call_outside_log_tool_call(client, mock_repo):
+    """Real bug, found by a genuinely cold agent's test suite failing only when
+    run alongside test_mcp_tools.py (which calls search_symbols_impl directly,
+    bypassing this module's own request-scoped wrapper entirely). That direct
+    call sets telemetry.py's `_cross_encoder_latency_ms` ContextVar in whatever
+    ambient context it happens to run in -- if that's not a request-scoped
+    asyncio Task, the value persists and gets copied into every Task created
+    afterward, including this test's own. Simulated directly here (no need for
+    a second process/test file to reproduce it) by setting the ContextVar the
+    same way an out-of-band call would, then confirming a real HTTP list_symbols
+    call still reports null -- log_tool_call must reset on entry, not just exit.
+    """
+    from loupe_mcp_server.telemetry import _cross_encoder_latency_ms
+
+    _cross_encoder_latency_ms.set(123.0)  # simulates the leak's real cause
+
+    session_id = _mcp_initialize(client)
+    _mcp_tool_call(client, session_id, "list_symbols", {"path_or_glob": "utils.py"}, request_id=2)
+
+    log_path = mock_repo / ".loupe" / "logs" / "retrieval" / f"{session_id}.jsonl"
+    entries = [json.loads(line) for line in log_path.read_text().strip().splitlines()]
+    assert entries[-1]["cross_encoder_latency_ms"] is None
+
+
 # --------------------------------------------------------------------------
 # E3: dashboard feedback — plain HTTP, deliberately not an MCP tool call
 # --------------------------------------------------------------------------

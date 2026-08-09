@@ -43,7 +43,12 @@ from .session_manager import session_id_from_request
 # etc.) that shouldn't grow a timing field just for one tool's internal telemetry —
 # log_tool_call's wrapper reads it back out in its own `finally` block below.
 # Safe under concurrent requests: FastAPI runs each request in its own asyncio
-# Task, and contextvars are copy-on-task, not shared globals.
+# Task, and contextvars are copy-on-task, not shared globals. NOT safe against
+# a direct, non-request call to search_symbols_impl (bypassing this module's
+# own wrapper below) -- that sets this ContextVar in the caller's ambient
+# context, which persists and gets inherited by later Tasks. log_tool_call's
+# wrapper resets this on entry (not just on exit) specifically to guard
+# against that case -- see its own comment for why.
 _cross_encoder_latency_ms: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "_cross_encoder_latency_ms", default=None
 )
@@ -152,6 +157,18 @@ def log_tool_call(tool_name: str) -> Callable:
             start = time.perf_counter()
             error_code: str | None = None
             result: Any = None
+            # Cleared on entry, not just read-and-reset on exit: a call to
+            # search_symbols_impl that bypasses this wrapper entirely (e.g. a
+            # test calling the pure impl function directly) sets this
+            # ContextVar in whatever context it happens to run in. If that's
+            # the ambient/root context rather than a request-scoped Task, the
+            # value persists and gets copied into every Task created
+            # afterward -- so a later, unrelated tool call's first read here
+            # would see stale data from a call this wrapper never saw. This
+            # reset before `fn` runs is what actually enforces "only what
+            # *this* call set gets reported," not the comment on the
+            # ContextVar's own declaration above.
+            _cross_encoder_latency_ms.set(None)
             try:
                 result = await fn(request, *args, **kwargs)
                 return result
