@@ -118,6 +118,8 @@ Loupe deliberately keeps its **tool** count small — every addition is weighed 
 
 ## Quick start
 
+*GPU or CPU-only? See the [setup guide](docs/SETUP.md) for the compute-profile decision — the short version: `loupe init` auto-detects your hardware and asks.*
+
 ```bash
 # 1. Set up each package in its own editable venv (core -> mcp_server -> cli)
 cd core        && python -m venv .venv && .venv/bin/pip install -e .
