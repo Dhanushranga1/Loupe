@@ -115,6 +115,10 @@ class IndexerWorker:
         for path in settled:
             self.collector.pending.pop(path, None)
 
-        self.reparse_count += 1
         current_index = self.app.state.index
         self.app.state.index = await asyncio.to_thread(update_index, current_index, settled)
+        # Incremented after the swap completes, not before starting it --
+        # `reparse_count` is the "how many reindex batches have actually
+        # landed" signal tests poll on to know it's safe to query the new
+        # index, not just "how many batches were kicked off."
+        self.reparse_count += 1

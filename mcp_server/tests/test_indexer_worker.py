@@ -18,7 +18,25 @@ from loupe_mcp_server.main import create_app
 PHASE1_FIXTURES = Path(__file__).parent.parent.parent / "core" / "tests" / "fixtures" / "phase1"
 PHASE1_FILES = ["utils.py", "models.py", "services.py", "handlers.py", "circular_a.py", "circular_b.py"]
 
-SETTLE_WAIT_SECONDS = 1.2  # comfortably past debounce_window(0.3s) + check_interval(0.5s)
+# Was a fixed time.sleep(1.2) here -- "comfortably past debounce_window(0.3s)
+# + check_interval(0.5s)" under an idle machine, but a real, order-dependent
+# flake under load (confirmed: reproduced once when a live `loupe serve`
+# process happened to be running during a full-suite run, passed every time
+# in isolation). Fixed by polling the real, observable signal
+# (worker.reparse_count) instead of racing a fixed clock against it -- also
+# faster in the common case, since it returns as soon as the batch settles
+# rather than always waiting the full window.
+POLL_INTERVAL_SECONDS = 0.05
+POLL_TIMEOUT_SECONDS = 5.0
+
+
+def _wait_for_reparse_count(worker, at_least: int, timeout: float = POLL_TIMEOUT_SECONDS) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if worker.reparse_count >= at_least:
+            return
+        time.sleep(POLL_INTERVAL_SECONDS)
+    raise AssertionError(f"reparse_count still {worker.reparse_count}, expected >= {at_least} after {timeout}s")
 
 
 @pytest.fixture
@@ -34,6 +52,7 @@ def test_editing_a_file_is_reflected_after_debounce_without_restart(repo):
         before = client.get("/list_symbols", params={"path_or_glob": "utils.py"}).json()
         assert {s["qualified_name"] for s in before} == {"format_currency", "validate_email"}
 
+        worker = app.state.indexer_worker
         (repo / "utils.py").write_text(
             "def format_currency(amount: float) -> str:\n"
             '    """Format a numeric amount as a display-ready currency string."""\n'
@@ -48,7 +67,7 @@ def test_editing_a_file_is_reflected_after_debounce_without_restart(repo):
             "    return 42\n"
         )
 
-        time.sleep(SETTLE_WAIT_SECONDS)
+        _wait_for_reparse_count(worker, at_least=1)
 
         after = client.get("/list_symbols", params={"path_or_glob": "utils.py"}).json()
         assert {s["qualified_name"] for s in after} == {"format_currency", "validate_email", "new_helper"}
@@ -64,7 +83,10 @@ def test_two_rapid_writes_within_debounce_window_trigger_exactly_one_reparse(rep
         time.sleep(0.05)  # well within the 300ms debounce window
         (repo / "utils.py").write_text("def format_currency(amount):\n    return f'${amount}'\n")
 
-        time.sleep(SETTLE_WAIT_SECONDS)
+        # Both writes land in `collector.pending` under the same path key
+        # before any settle check can run, so there is no way for this to
+        # later become 2 -- safe to return as soon as it reaches 1.
+        _wait_for_reparse_count(worker, at_least=1)
 
         assert worker.reparse_count == 1, "two writes inside one debounce window must settle into a single re-parse"
 
@@ -88,12 +110,13 @@ def test_semantic_search_works_after_a_real_incremental_reindex(repo):
         # A real incremental reindex, exactly like the other tests in this
         # file — runs update_index inside asyncio.to_thread on a threadpool
         # thread, swapping in a freshly-built SemanticIndex.
+        worker = app.state.indexer_worker
         (repo / "utils.py").write_text(
             "def format_currency(amount: float) -> str:\n"
             '    """Format a numeric amount as a display-ready currency string."""\n'
             "    return f'${amount:.2f}'\n"
         )
-        time.sleep(SETTLE_WAIT_SECONDS)
+        _wait_for_reparse_count(worker, at_least=1)
 
         # Handled on the main event loop thread — a different thread than
         # whichever threadpool worker built the index above.
