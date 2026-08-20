@@ -107,6 +107,7 @@ Loupe deliberately keeps its **tool** count small — every addition is weighed 
 | `submit_feedback` | Conversational feedback on a retrieval, feeding the learned ranker |
 | `session_notes` | A scratchpad that survives compaction, decay-ranked and deduplicated |
 | `build_ledger` | Tracks build/implementation progress on the target project, with graph-derived dependencies and automatic staleness detection |
+| `find_untested_high_impact_symbols` | Composes blast-radius analysis with test linkage: risky code with a large blast radius and zero linked tests, surfaced directly |
 
 | Resource | Purpose |
 |---|---|

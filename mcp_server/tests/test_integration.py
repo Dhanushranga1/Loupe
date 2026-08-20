@@ -118,6 +118,7 @@ def test_mcp_handshake_and_tools_list(client):
         "find_code_smells",
         "session_notes",
         "build_ledger",
+        "find_untested_high_impact_symbols",
     }
 
 
@@ -161,6 +162,20 @@ def test_mcp_find_code_smells_detects_the_real_circular_fixture_through_http(cli
     )
     names = {f["qualified_name"] for f in result["findings"]}
     assert {"helper_a", "helper_b"} <= names
+
+
+def test_mcp_find_untested_high_impact_symbols_through_http(client):
+    """PHASE1_FIXTURES has no test_*.py file at all, so E2's link_tests finds nothing to
+    link -- every real caller relationship in the repo is, correctly, "untested" here. A
+    real, resolvable chain from this exact fixture: format_currency <- Order.total (one
+    direct caller, no transitive one, since nothing calls Order.total)."""
+    session_id = _mcp_initialize(client)
+    result = _mcp_tool_call(client, session_id, "find_untested_high_impact_symbols", {}, request_id=2)
+
+    by_name = {r["symbol"]["qualified_name"]: r["impact_size"] for r in result["results"]}
+    assert by_name["format_currency"] == 1
+    assert by_name["validate_email"] == 1
+    assert result["total_count"] == len(result["results"])
 
 
 def test_two_mcp_sessions_have_independent_governor_state(client):

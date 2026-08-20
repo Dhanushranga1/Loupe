@@ -1,15 +1,22 @@
 """MCP tool definitions — the four Phase 4 tools plus E1's `analyze_impact`,
-E3's optional `submit_feedback`, and Phase 7's `find_code_smells`
-(docs/phase-4-systems.md §3, docs/loupe-extensions.md E1/E3,
+E3's optional `submit_feedback`, Phase 7's `find_code_smells`, and
+`find_untested_high_impact_symbols` (composing E1's impact analysis with
+E2's test linkage to surface risky, untested, high-blast-radius code)
+(docs/phase-4-systems.md §3, docs/loupe-extensions.md E1/E2/E3,
 docs/PhaseX/phase-7-fastapi-adapter-smells.md).
 
 Governor scoping (§3, stated explicitly since it wasn't nailed down until
-this phase): `list_symbols`, `search_symbols`, `expand_dependencies`,
-`analyze_impact`, and `find_code_smells` all return discovery-tier content
-only (signatures/ids/findings, not full source) and never touch Phase 3's
-session residency/eviction logic — their cost is small enough to treat as
-always-affordable. Only `get_symbol` — the one call returning full extracted
-source — is governed.
+this phase): `search_symbols`, `expand_dependencies`, `analyze_impact`,
+`find_code_smells`, and `find_untested_high_impact_symbols` all return
+discovery-tier content only (signatures/ids/findings, not full source) and
+never touch Phase 3's session residency/eviction logic — their cost is small
+enough to treat as always-affordable. `get_symbol` — the one call returning
+full extracted source — is fully governed (residency/eviction included).
+`list_symbols` sits in between as of Fix 7
+(docs/PhaseX/retrieval-token-efficiency-fixes.md §9): `detail="full"` joins
+the same session budget as a direct charge-or-deny, no residency, while
+`detail="compact"`/`"signature"` stay always-affordable like the rest of
+this list.
 
 Split into pure `*_impl` functions (testable directly against a manually
 constructed `LoupeIndex`, no HTTP needed) and thin `@router` HTTP wrappers
@@ -40,6 +47,7 @@ from loupe_core.governor.session import HARD_CEILING, request_symbols
 from loupe_core.graph.builder import EdgeType
 from loupe_core.graph.impact import analyze_impact as graph_analyze_impact
 from loupe_core.graph.traversal import expand_dependencies as graph_expand_dependencies
+from loupe_core.graph.untested_impact import find_untested_high_impact_symbols as graph_find_untested_high_impact_symbols
 from loupe_core.parsing.schema import Symbol
 
 from .bootstrap import LoupeIndex
@@ -620,6 +628,34 @@ def find_code_smells_impl(
     )
 
 
+class UntestedHighImpactSymbolResponse(BaseModel):
+    symbol: SymbolSummary
+    impact_size: int  # direct + transitive callers (E1's own two-tier count), zero linked tests
+
+
+class FindUntestedHighImpactSymbolsResponse(BaseModel):
+    results: list[UntestedHighImpactSymbolResponse]
+    total_count: int  # real count before any max_results truncation
+
+
+def find_untested_high_impact_symbols_impl(
+    index: LoupeIndex, min_impact: int = 1, max_results: int = DEFAULT_MAX_AFFECTED
+) -> FindUntestedHighImpactSymbolsResponse:
+    # Same truncation shape as analyze_impact/expand_dependencies/find_code_smells above:
+    # core computes the full, correct, already-sorted-by-impact-size-descending list; capping
+    # is a presentation-only concern here, with the real total preserved so truncation is
+    # visible rather than silent.
+    symbols_by_id = {s.id: s for s in index.symbols}
+    pairs = graph_find_untested_high_impact_symbols(
+        index.graph.graph, symbols_by_id, index.graph.pagerank_scores, min_impact=min_impact
+    )
+    results = [
+        UntestedHighImpactSymbolResponse(symbol=_to_summary(symbols_by_id[sid]), impact_size=impact_size)
+        for sid, impact_size in pairs[:max_results]
+    ]
+    return FindUntestedHighImpactSymbolsResponse(results=results, total_count=len(pairs))
+
+
 class SubmitFeedbackResponse(BaseModel):
     status: Literal["recorded"] = "recorded"
 
@@ -1095,3 +1131,12 @@ async def find_code_smells_route(
 ) -> FindCodeSmellsResponse:
     index: LoupeIndex = request.app.state.index
     return find_code_smells_impl(index, category=category, max_findings=max_findings)
+
+
+@router.get("/find_untested_high_impact_symbols", operation_id="find_untested_high_impact_symbols")
+@log_tool_call("find_untested_high_impact_symbols")
+async def find_untested_high_impact_symbols_route(
+    request: Request, min_impact: int = 1, max_results: int = DEFAULT_MAX_AFFECTED
+) -> FindUntestedHighImpactSymbolsResponse:
+    index: LoupeIndex = request.app.state.index
+    return find_untested_high_impact_symbols_impl(index, min_impact=min_impact, max_results=max_results)

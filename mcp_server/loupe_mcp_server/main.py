@@ -109,12 +109,14 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
         # /feedback must not silently become a tool just by living in the
         # same FastAPI app. E1 adds analyze_impact (5th), E3 adds the
         # optional submit_feedback (6th), Phase 7 adds find_code_smells
-        # (7th), Phase 11 adds session_notes (8th), and Phase 13 adds
-        # build_ledger (9th) — a real, deliberate crossing of the extensions
-        # doc's earlier "6 tools" running count, worth naming explicitly
-        # rather than letting the number drift unremarked. `scope` (Phase
-        # 11's other tool-surface addition) adds zero new tools by design —
-        # it's a parameter on three existing ones.
+        # (7th), Phase 11 adds session_notes (8th), Phase 13 adds
+        # build_ledger (9th), and find_untested_high_impact_symbols
+        # (composing E1's impact analysis with E2's test linkage) adds a
+        # 10th — a real, deliberate crossing of the extensions doc's earlier
+        # "6 tools" running count, worth naming explicitly rather than
+        # letting the number drift unremarked. `scope` (Phase 11's other
+        # tool-surface addition) adds zero new tools by design — it's a
+        # parameter on three existing ones.
         include_operations=[
             "list_symbols",
             "search_symbols",
@@ -125,6 +127,7 @@ def create_app(repo_root: Path | None = None) -> FastAPI:
             "find_code_smells",
             "session_notes",
             "build_ledger",
+            "find_untested_high_impact_symbols",
         ],
     )
     # E4 + Phase 14 §1 (docs/loupe-extensions.md, docs/PhaseX/phase-14-adaptive-context-compression.md):

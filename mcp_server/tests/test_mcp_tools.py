@@ -23,6 +23,7 @@ from loupe_mcp_server.mcp_tools import (
     build_ledger_impl,
     expand_dependencies_impl,
     find_code_smells_impl,
+    find_untested_high_impact_symbols_impl,
     get_symbol_impl,
     get_symbols_impl,
     list_symbols_impl,
@@ -34,6 +35,7 @@ from loupe_mcp_server.session_manager import SessionManager
 from loupe_core.governor.budget import symbol_extraction_cost
 from loupe_core.governor.session import HARD_CEILING
 from loupe_core.graph.builder import build_graph, parse_file
+from loupe_core.graph.test_linkage import link_tests
 from loupe_core.parsing.incremental import FileIndexCache
 from loupe_core.retrieval.lexical import LexicalIndex
 from loupe_core.retrieval.semantic import EMBEDDING_MODEL_NAME, SemanticIndex
@@ -194,6 +196,60 @@ def smells_index(tmp_path_factory, real_model):
 
     graph = build_graph(list(parsed.values()))
     all_symbols = [s for pf in parsed.values() for s in pf.symbols]
+    lexical_index = LexicalIndex(all_symbols)
+    semantic_index = SemanticIndex(model=real_model)
+    semantic_index.index(all_symbols)
+
+    return LoupeIndex(
+        repo_root=repo,
+        loupe_dir=repo / ".loupe",
+        parsed_files=parsed,
+        graph=graph,
+        lexical_index=lexical_index,
+        semantic_index=semantic_index,
+        file_cache=FileIndexCache(),
+    )
+
+
+@pytest.fixture(scope="module")
+def untested_impact_index(tmp_path_factory, real_model):
+    """A hand-built fixture with two, real, distinct blast radii: risky_function (2 direct
+    callers, no test) and safe_function (1 direct caller, one confirmed test) -- so a wiring
+    bug that ignores either the impact or the test-linkage half of the composed core function
+    would be caught (safe_function has *higher* PageRank potential than a 0-caller symbol
+    but must still be excluded because it's tested; risky_function must survive because,
+    despite being smaller than the smells_index/many_callers_index fixtures, it's real and
+    untested). Unlike test_index/many_callers_index, this one runs E2's link_tests so the
+    TESTS edges find_untested_high_impact_symbols_impl depends on actually exist.
+    """
+    import os
+
+    repo = tmp_path_factory.mktemp("untested_impact_repo")
+    (repo / "core_logic.py").write_text(
+        "def risky_function():\n    return 1\n\n\ndef safe_function():\n    return 2\n"
+    )
+    (repo / "callers.py").write_text(
+        "from core_logic import risky_function, safe_function\n\n\n"
+        "def caller_a():\n    return risky_function()\n\n\n"
+        "def caller_b():\n    return risky_function()\n\n\n"
+        "def caller_c():\n    return safe_function()\n"
+    )
+    (repo / "test_core_logic.py").write_text(
+        "from core_logic import safe_function\n\n\n"
+        "def test_safe_function():\n    assert safe_function() == 2\n"
+    )
+
+    files = ["core_logic.py", "callers.py", "test_core_logic.py"]
+    old_cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        parsed = {f: parse_file(f) for f in files}
+    finally:
+        os.chdir(old_cwd)
+
+    graph = build_graph(list(parsed.values()))
+    all_symbols = [s for pf in parsed.values() for s in pf.symbols]
+    link_tests(graph.graph, {s.id: s for s in all_symbols})
     lexical_index = LexicalIndex(all_symbols)
     semantic_index = SemanticIndex(model=real_model)
     semantic_index.index(all_symbols)
@@ -800,6 +856,42 @@ def test_find_code_smells_findings_are_real_symbol_locations(smells_index):
     assert finding.qualified_name == "get_all_with_details_smelly"
     assert finding.file_path == "n_plus_one.py"
     assert finding.severity == "warning"
+
+
+# --------------------------------------------------------------------------
+# find_untested_high_impact_symbols (composes E1's analyze_impact with
+# E2's test linkage -- docs/loupe-extensions.md E1/E2)
+# --------------------------------------------------------------------------
+
+
+def test_find_untested_high_impact_symbols_excludes_the_tested_symbol(untested_impact_index):
+    response = find_untested_high_impact_symbols_impl(untested_impact_index)
+
+    names = {r.symbol.qualified_name for r in response.results}
+    assert "safe_function" not in names
+    assert "risky_function" in names
+
+
+def test_find_untested_high_impact_symbols_reports_the_real_blast_radius(untested_impact_index):
+    response = find_untested_high_impact_symbols_impl(untested_impact_index)
+
+    risky = next(r for r in response.results if r.symbol.qualified_name == "risky_function")
+    assert risky.impact_size == 2
+    assert risky.symbol.file_path == "core_logic.py"
+
+
+def test_find_untested_high_impact_symbols_min_impact_filters_it_out(untested_impact_index):
+    response = find_untested_high_impact_symbols_impl(untested_impact_index, min_impact=3)
+
+    assert response.results == []
+    assert response.total_count == 0
+
+
+def test_find_untested_high_impact_symbols_caps_results_but_preserves_the_real_total(untested_impact_index):
+    response = find_untested_high_impact_symbols_impl(untested_impact_index, max_results=0)
+
+    assert response.results == []
+    assert response.total_count == 1  # risky_function alone -- safe_function stays excluded regardless of cap
 
 
 # --------------------------------------------------------------------------
