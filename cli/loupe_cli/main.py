@@ -203,6 +203,39 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+_LEVEL_LABEL = {"ok": "OK", "warning": "WARN", "error": "ERROR"}
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """`loupe doctor` — health-check for this repo's Loupe setup
+    (docs/progress/loupe-doctor/steps/01-doctor-command.md). Detection, not
+    enforcement, matching `cmd_check`'s own boundary: always exits 0 once
+    there's an index to check, regardless of what the checks find -- the one
+    exception (exit 1, no checks run) mirrors cmd_status's own behavior for
+    the same "nothing to check yet" case.
+    """
+    from loupe_mcp_server.doctor import run_doctor_checks
+
+    repo_root = Path(args.path).resolve()
+    loupe_dir = repo_root / ".loupe"
+
+    if not loupe_dir.exists():
+        print(f"No .loupe/ directory found at {repo_root} — run `loupe index` or `loupe serve` first.")
+        return 1
+
+    config = load_config(repo_root)
+    findings = run_doctor_checks(repo_root, config)
+
+    print(f"loupe doctor — {repo_root}\n")
+    for finding in findings:
+        print(f"[{_LEVEL_LABEL[finding.level]:5}] {finding.check}: {finding.message}")
+
+    problems = [f for f in findings if f.level != "ok"]
+    if not problems:
+        print("\nNo problems found.")
+    return 0
+
+
 def _count_retrieval_log_entries(loupe_dir: Path) -> int:
     logs_dir = loupe_dir / "logs" / "retrieval"
     if not logs_dir.exists():
@@ -603,6 +636,10 @@ def main(argv: list[str] | None = None) -> int:
     status_parser = subparsers.add_parser("status", help="show index freshness without touching anything")
     status_parser.add_argument("path", nargs="?", default=".")
     status_parser.set_defaults(func=cmd_status)
+
+    doctor_parser = subparsers.add_parser("doctor", help="health-check this repo's Loupe setup")
+    doctor_parser.add_argument("path", nargs="?", default=".")
+    doctor_parser.set_defaults(func=cmd_doctor)
 
     retrain_parser = subparsers.add_parser("retrain", help="retrain the learned ranker from accumulated telemetry")
     retrain_parser.add_argument("path", nargs="?", default=".")

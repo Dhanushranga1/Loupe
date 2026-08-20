@@ -148,6 +148,45 @@ def test_status_reports_cold_start_ranker_before_any_training(tmp_path, capsys):
     assert "Learned ranker: not trained (cold-start" in output
 
 
+def test_doctor_without_an_index_returns_exit_code_1(tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+
+    exit_code = main(["doctor", str(repo)])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "run `loupe index`" in output
+
+
+def test_doctor_on_a_clean_indexed_repo_reports_no_problems(tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+    main(["index", str(repo)])
+    capsys.readouterr()
+
+    exit_code = main(["doctor", str(repo)])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "No problems found." in output
+
+
+def test_doctor_flags_a_manifest_embedding_model_missing_its_org_prefix(tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+    main(["index", str(repo)])
+    capsys.readouterr()
+
+    (repo / "loupe.manifest.yaml").write_text(
+        "schema_version: 1\nlanguages: [python]\nembedding_model: bge-small-en-v1.5\n"
+    )
+
+    exit_code = main(["doctor", str(repo)])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "[WARN " in output
+    assert "bge-small-en-v1.5" in output
+
+
 def test_status_surfaces_coefficients_of_a_previously_saved_trained_ranker(tmp_path, capsys):
     import random
 
