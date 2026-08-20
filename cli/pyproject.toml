@@ -10,6 +10,7 @@ name = "loupe_cli"
 version = "0.1.0"
 description = "The loupe command-line entry point: init/index/serve/status/retrain, thin wrappers over loupe_core and loupe_mcp_server"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "uvicorn[standard]>=0.30",
 ]

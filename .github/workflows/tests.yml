@@ -1,0 +1,78 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}
+      - run: |
+          cd core
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
+      - run: |
+          cd core
+          .venv/bin/python -m pytest -q
+
+  mcp_server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}
+      - run: |
+          cd core && python -m venv .venv && .venv/bin/pip install -e .
+          cd ../mcp_server && python -m venv .venv && .venv/bin/pip install -e ../core -e ".[dev]"
+      - run: |
+          cd mcp_server
+          .venv/bin/python -m pytest -q
+
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}
+      - run: |
+          cd core && python -m venv .venv && .venv/bin/pip install -e .
+          cd ../mcp_server && python -m venv .venv && .venv/bin/pip install -e ../core -e .
+          cd ../cli && python -m venv .venv && .venv/bin/pip install -e ../core -e ../mcp_server -e ".[dev]"
+      - run: |
+          cd cli
+          .venv/bin/python -m pytest -q
+
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          cd core && python -m venv .venv && .venv/bin/pip install -e .
+          cd ../scaffold && python -m venv .venv && .venv/bin/pip install -e ../core -e ".[dev]"
+      - run: |
+          cd scaffold
+          .venv/bin/python -m pytest -q

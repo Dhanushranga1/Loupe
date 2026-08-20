@@ -178,3 +178,13 @@ Every phase was built against a hand-written spec, then verified by dogfooding �
 ## Status
 
 The core roadmap (foundations → retrieval → governor → server → evaluation → self-improvement), all four original extensions (blast-radius analysis, test linkage, feedback loop, auto-derived conventions), Scaffold's full brick/compose system, the Lens dashboard, and a second roadmap wave (retrieval precision upgrades, graph clustering, context engineering, adaptive context compression, the zero-cost static analysis pack, compute profiles, the experimental gate, HyDE, and the target-project build ledger) are all complete and tested — 500+ tests across `core`/`mcp_server`/`cli`/`scaffold`. HyDE's algorithm is real and wired into retrieval fusion, but no real LLM client is constructed anywhere in this project's own server startup: Loupe has made zero paid API calls anywhere in its own operation so far, and that's a line kept deliberate about crossing — wiring a real, credentialed client is left to whoever operates a server with it explicitly enabled.
+
+---
+
+## Contributing
+
+Bug reports, issues, and PRs are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, test commands, and the conventions this codebase holds itself to.
+
+## License
+
+[MIT](LICENSE)

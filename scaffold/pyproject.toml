@@ -10,6 +10,7 @@ name = "loupe_scaffold"
 version = "0.1.0"
 description = "Loupe Scaffold: generates new FastAPI projects via a composable brick system (docs/loupe-scaffold.md)"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "jinja2>=3.1",
     "loupe_core",

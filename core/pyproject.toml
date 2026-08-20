@@ -7,6 +7,7 @@ name = "loupe_core"
 version = "0.1.0"
 description = "Framework-free symbol-graph extraction and retrieval library for Loupe"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     # Pinned below 0.26.0: that release segfaults during QueryCursor.captures()
     # on real-world files with ~170+ captured nodes (verified via the Phase 0
