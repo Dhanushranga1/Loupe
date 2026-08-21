@@ -13,7 +13,16 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
     "fastapi>=0.110",
-    "fastapi-mcp>=0.4",
+    # Pinned exactly, both of these: fastapi-mcp declares mcp>=1.12.0 with no
+    # ceiling of its own, so an unpinned mcp resolves to whatever's newest at
+    # install time -- a real break found by CI's fresh install, not a local
+    # dev venv's install history: a newer mcp release changed the internal
+    # `Server()` constructor's signature, which fastapi-mcp 0.4.0's own
+    # setup_server() calls positionally, raising a TypeError at import time.
+    # This exact pair is the one this codebase is actually built and tested
+    # against.
+    "fastapi-mcp==0.4.0",
+    "mcp==1.28.1",
     "uvicorn[standard]>=0.30",
     "watchdog>=4.0",
     "pydantic>=2.0",
